@@ -522,8 +522,8 @@ function ouPaths(rng, p){                       // monthly SOFR & fixed, index 1
   return { sofr, fix };
 }
 let mcCache={ sig:null, res:null };
-function mcSig(ctx, p){ return JSON.stringify([ctx.loan, ctx.armUp, ctx.Hm, state.ralt,
-  state.arm.rate, state.arm.margin, state.arm.floor, ctx.caps,
+function mcSig(ctx, p){ return JSON.stringify([ctx.loan, ctx.armUp, ctx.fixUp, ctx.Hm, state.ralt,
+  state.arm.rate, state.arm.margin, state.arm.floor, ctx.caps, state.fix.rate,
   state.refi.on, state.refi.yearN, state.refi.rateMode, state.refi.rate, state.refi.term, state.refi.cost, state.closing.refi,
   state.guard.on, state.guard.threshold, p]); }
 function pctl(sorted, f){ return sorted[Math.min(sorted.length-1, Math.max(0, Math.round(f*(sorted.length-1))))]; }
@@ -679,14 +679,14 @@ function compute(){
   // the rate ceiling is the lifetime peak (a small initial cap ramps over several resets);
   // the worst legal payment is the peak P&I along that path within the horizon.
   let ceilingRate=0, capMaxResetPI=0;
-  for(let t=0;t<360;t++) if(capMaxSim.rateA[t]>ceilingRate) ceilingRate=capMaxSim.rateA[t];
-  for(let t=0;t<Hm;t++) if(capMaxSim.pi[t]>capMaxResetPI) capMaxResetPI=capMaxSim.pi[t];
+  for(let t=0;t<360;t++){ if(capMaxSim.rateA[t]>ceilingRate) ceilingRate=capMaxSim.rateA[t];
+    if(capMaxSim.pi[t]>capMaxResetPI) capMaxResetPI=capMaxSim.pi[t]; }   // contractual peak, horizon-independent
   const floorRate = capMinSim.rateA[84], capMaxShock = capMaxResetPI - fixPay;
 
   // Monte Carlo (only when enabled; cached on the relevant params)
   let mc=null;
   if(state.mc.on){
-    mc = runMC({ loan, fixAcc, armUp, Hm, rm, caps, fixBalH: fixSim.balA[Hm-1] });
+    mc = runMC({ loan, fixAcc, armUp, fixUp, Hm, rm, caps, fixBalH: fixSim.balA[Hm-1] });
   }
 
   RES = { down, loan, Hm, rm, armPts, fixPts, armUp, fixUp, fixSim, fixAcc, fixTot, fixPay, bal84,
