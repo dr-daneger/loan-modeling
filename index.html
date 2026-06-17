@@ -90,7 +90,7 @@
   .verdict { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card); box-shadow:var(--shadow);
     padding:14px 18px; margin-bottom:18px; font-size:14px; line-height:1.55; }
   .verdict b.fix { color:var(--fix); } .verdict b.arm { color:var(--arm); } .verdict b.warn{ color:var(--warn); }
-  .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:18px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; margin-bottom:18px; }
   .kpi { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card); box-shadow:var(--shadow); padding:15px 16px; transition:box-shadow .2s, transform .12s; }
   .kpi:hover{ box-shadow:var(--shadow-lg); transform:translateY(-1px); }
   .kpi .lab { font-size:11.5px; color:var(--muted); font-weight:600; display:flex; align-items:center; gap:6px; }
@@ -138,7 +138,7 @@
 <div id="app">
   <aside id="side">
     <div class="brand"><span class="dot"></span><h1>ARM&nbsp;vs&nbsp;Fixed</h1></div>
-    <p class="tagline">7/6 ARM rate-risk vs the 30-yr fixed baseline · 17730 SW Pheasant Ln</p>
+    <p class="tagline">7/6 ARM rate-risk vs the 30-yr fixed baseline · worked example</p>
 
     <div class="group">
       <h2>Loan &amp; down payment</h2>
@@ -227,6 +227,31 @@
         <p class="hint" style="margin-bottom:2px"><b>Custom forward curves</b> (calendar-year %). Cells flag a year-over-year move &gt; 1.5% (the §5.4 soft velocity cap).</p>
         <table class="grid-edit" id="custTable"></table>
         <button class="lnk" id="custReset" style="margin-top:6px">Reset custom to Base grid</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <h2>Monte Carlo — rate-path distribution</h2>
+      <div class="field"><label>Simulate the reset as a distribution</label>
+        <div class="seg seg-full" id="mcSeg"><button data-mc="1">On</button><button data-mc="0" class="on">Off</button></div></div>
+      <p class="hint">SOFR follows a mean-reverting (Vasicek) process; the 30-yr fixed follows a correlated one. Every draw runs through the same cap/floor reset engine, so the caps clip the upper tail — the named scenarios above are just illustrative draws from this space.</p>
+      <div id="mcBody" style="opacity:.45;pointer-events:none">
+        <div class="field" style="margin-top:10px"><label>Paths <span class="val" id="v_mcN"></span></label>
+          <input type="range" id="mcN" min="100" max="2000" step="100"></div>
+        <div class="field"><label>Long-run SOFR θ (where it settles) <span class="val" id="v_mcTheta"></span></label>
+          <input type="range" id="mcTheta" min="1" max="6" step="0.25"></div>
+        <div class="field"><label>Reversion speed κ (how fast it settles) <span class="val" id="v_mcKappa"></span></label>
+          <input type="range" id="mcKappa" min="0.1" max="2" step="0.1"></div>
+        <div class="field"><label>Volatility σ (spread of paths) <span class="val" id="v_mcSigma"></span></label>
+          <input type="range" id="mcSigma" min="0.3" max="3" step="0.1"></div>
+        <div class="field"><label>Long-run mortgage spread (fixed − SOFR) <span class="val" id="v_mcSpread"></span></label>
+          <input type="range" id="mcSpread" min="1.5" max="4" step="0.25"></div>
+        <div class="field"><label>SOFR ↔ fixed correlation ρ <span class="val" id="v_mcRho"></span></label>
+          <input type="range" id="mcRho" min="0" max="0.95" step="0.05"></div>
+        <div class="field"><label>Overlay named scenarios on the fan <span class="val" id="v_mcScen"></span></label>
+          <div class="seg seg-full" id="mcScenSeg"><button data-ms="1" class="on">On</button><button data-ms="0">Off</button></div></div>
+        <button class="seg mini" id="mcResample" style="width:100%;margin-top:4px;justify-content:center">↺ Resample (new random seed)</button>
+        <p class="hint">The 7-yr teaser means today's SOFR barely matters by the first reset — the spread there is close to the process's <b>stationary</b> distribution (std ≈ σ/√2κ around θ), not a thin cone from today. The contractual ceiling is a deep tail (needs SOFR ≥ ceiling − margin).</p>
       </div>
     </div>
 
@@ -343,6 +368,7 @@ const state = {
   ralt: 7, horizon: 30,
   dollars: "nominal",
   opp: true,
+  mc: { on:false, paths:400, seed:20260617, thetaS:3.0, kappaS:0.5, sigmaS:1.2, spreadF:2.75, rho:0.8, showScen:true },
 };
 const DEFAULTS = JSON.parse(JSON.stringify(state));
 
@@ -394,7 +420,8 @@ function simLoan(cfg){
     }
     if(cfg.kind==="arm" && !refiActive && t>84 && (t-85)%6===0){   // reset at 85, 91, 97, ...
       const cy=calOf(t);
-      let fi = round8(curveAt(cfg.sObj,"sofr",cy) + cfg.margin);
+      const sofr = cfg.sofrAt ? cfg.sofrAt(t) : curveAt(cfg.sObj,"sofr",cy);   // path override for MC / bounds
+      let fi = round8(sofr + cfg.margin);
       let r = prevReset===null ? clamp(fi, cfg.startRate-cfg.caps.init, cfg.startRate+cfg.caps.init)
                                : clamp(fi, prevReset-cfg.caps.periodic, prevReset+cfg.caps.periodic);
       r = clamp(r, cfg.startRate-cfg.caps.life, cfg.startRate+cfg.caps.life);
@@ -406,6 +433,113 @@ function simLoan(cfg){
     pi[t-1]=pay; balA[t-1]=bal; rateA[t-1]=rate;
   }
   return { pi, balA, rateA, refiPaid, refiMonth };
+}
+
+// ===========================================================================
+// Deterministic contractual bounds.  No scenario, no assumption: drive the
+// index to ±infinity and let the cap/floor machinery in simLoan define the
+// extreme legal rate path.  With 5/1/5 the ceiling = start + lifetime cap at
+// the very first reset (initial cap = lifetime cap), so the worst legal rate
+// is reached in one step; with e.g. 2/2/5 it ramps over the periodic caps.
+// ===========================================================================
+const HUGE_SOFR=99, TINY_SOFR=-99;
+function boundSim(loan, caps, dir){            // dir:+1 ceiling (worst), -1 floor (best)
+  return simLoan({ loan, kind:"arm", startRate:state.arm.rate, margin:state.arm.margin,
+    caps, floor:state.arm.floor, sObj:SCEN.base, refi:null,
+    sofrAt: ()=> dir>0 ? HUGE_SOFR : TINY_SOFR });
+}
+
+// ===========================================================================
+// Monte Carlo over the index path.  SOFR follows a mean-reverting
+// Ornstein-Uhlenbeck (Vasicek) process; the 30-yr fixed follows a second OU
+// correlated to it (so a refi rescue only appears in the same draws where
+// rates stayed low — the probabilistic form of the refi-as-hedge guard).
+// Each draw is fed through the SAME cap/floor reset engine, so the caps turn
+// an unbounded rate distribution into a bounded, asymmetric payment one.
+// ===========================================================================
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a);
+  t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+function gaussPair(rng){ let u=0,v=0; while(u===0)u=rng(); while(v===0)v=rng();
+  const R=Math.sqrt(-2*Math.log(u)), A=2*Math.PI*v; return [R*Math.cos(A), R*Math.sin(A)]; }
+
+function mcParams(){
+  const m=state.mc;
+  return { N:m.paths, seed:m.seed>>>0,
+    r0S:SCEN.base.sofr[0], thetaS:m.thetaS, kappaS:m.kappaS, sigmaS:m.sigmaS,
+    r0F:SCEN.base.fix[0],  thetaF:m.thetaS+m.spreadF, kappaF:Math.max(0.2,m.kappaS*0.8), sigmaF:m.sigmaS*0.8,
+    rho:m.rho };
+}
+function ouPaths(rng, p){                       // monthly SOFR & fixed, index 1..360 (0 = start)
+  const dt=1/12, sdt=Math.sqrt(dt);
+  const sofr=new Float64Array(361), fix=new Float64Array(361);
+  let rs=p.r0S, rf=p.r0F; sofr[0]=rs; fix[0]=rf;
+  for(let t=1;t<=360;t++){
+    const [z1,z2]=gaussPair(rng);
+    const zS=z1, zF=p.rho*z1 + Math.sqrt(1-p.rho*p.rho)*z2;
+    rs += p.kappaS*(p.thetaS-rs)*dt + p.sigmaS*sdt*zS; if(rs<0) rs=0;       // ELB on SOFR
+    rf += p.kappaF*(p.thetaF-rf)*dt + p.sigmaF*sdt*zF; if(rf<1) rf=1;
+    sofr[t]=rs; fix[t]=rf;
+  }
+  return { sofr, fix };
+}
+let mcCache={ sig:null, res:null };
+function mcSig(ctx, p){ return JSON.stringify([ctx.loan, ctx.armUp, ctx.Hm, state.ralt,
+  state.arm.rate, state.arm.margin, state.arm.floor, ctx.caps,
+  state.refi.on, state.refi.yearN, state.refi.rateMode, state.refi.rate, state.refi.term, state.refi.cost, state.closing.refi,
+  state.guard.on, state.guard.threshold, p]); }
+function pctl(sorted, f){ return sorted[Math.min(sorted.length-1, Math.max(0, Math.round(f*(sorted.length-1))))]; }
+function runMC(ctx){
+  const p=mcParams(), sig=mcSig(ctx,p);
+  if(mcCache.sig===sig) return mcCache.res;
+  const { loan, fixAcc, armUp, Hm, rm, caps, fixBalH } = ctx;
+  const N=p.N, rng=mulberry32(p.seed);
+  const colN=new Float32Array(N*360), colP=new Float32Array(N*360);    // month-major: t*N + k
+  const crossN=new Array(N), crossP=new Array(N), totN=new Float64Array(N), totP=new Float64Array(N);
+  let behindN=0, behindP=0;
+  const refiOn=state.refi.on, refiMonth=Math.round(state.refi.yearN*12);
+  for(let k=0;k<N;k++){
+    const path=ouPaths(rng,p);
+    let refi=null;
+    if(refiOn){
+      const fN=path.fix[Math.min(360,refiMonth)];
+      if(!(state.guard.on && fN>=state.guard.threshold)){
+        const nr = state.refi.rateMode==="scenario" ? fN : state.refi.rate;
+        refi={ use:true, month:refiMonth, newRate:nr, cost:state.refi.cost, costAmount:state.closing.refi, term:state.refi.term };
+      }
+    }
+    const sim=simLoan({ loan, kind:"arm", startRate:state.arm.rate, margin:state.arm.margin,
+      caps, floor:state.arm.floor, sObj:SCEN.base, refi, sofrAt:t=>path.sofr[t] });
+    let sN=armUp, sP=armUp, wN=false, wP=false, cN=null, cP=null;
+    for(let t=1;t<=360;t++){
+      sN+=sim.pi[t-1]; sP+=sim.pi[t-1]/Math.pow(1+rm,t);
+      if(t===sim.refiMonth && sim.refiPaid){ sN+=sim.refiPaid; sP+=sim.refiPaid/Math.pow(1+rm,t); }
+      const dN=sN-fixAcc.cumN[t-1], dP=sP-fixAcc.cumP[t-1];
+      colN[(t-1)*N+k]=dN; colP[(t-1)*N+k]=dP;
+      if(t<=Hm){ if(dN<0)wN=true; if(wN&&cN===null&&dN>0)cN=t; if(dP<0)wP=true; if(wP&&cP===null&&dP>0)cP=t; }
+    }
+    crossN[k]=cN; crossP[k]=cP;
+    const armBal=sim.balA[Hm-1];
+    const dTotN=colN[(Hm-1)*N+k] + (armBal - fixBalH);
+    const dTotP=colP[(Hm-1)*N+k] + (armBal - fixBalH)/Math.pow(1+rm,Hm);
+    totN[k]=dTotN; totP[k]=dTotP; if(dTotN>0)behindN++; if(dTotP>0)behindP++;
+  }
+  // per-month percentile bands
+  function bands(col){ const b={p05:new Float64Array(360),p25:new Float64Array(360),p50:new Float64Array(360),p75:new Float64Array(360),p95:new Float64Array(360)};
+    const tmp=new Float64Array(N);
+    for(let t=0;t<360;t++){ for(let k=0;k<N;k++) tmp[k]=col[t*N+k]; tmp.sort();
+      b.p05[t]=pctl(tmp,.05); b.p25[t]=pctl(tmp,.25); b.p50[t]=pctl(tmp,.50); b.p75[t]=pctl(tmp,.75); b.p95[t]=pctl(tmp,.95); }
+    return b; }
+  const sortedTotN=Float64Array.from(totN).sort(), sortedTotP=Float64Array.from(totP).sort();
+  function medCross(arr){ const yrs=arr.filter(x=>x!==null).map(x=>x/12).sort((a,b)=>a-b);
+    return { frac:yrs.length/N, median: yrs.length? yrs[Math.floor(yrs.length/2)] : null }; }
+  const res={ N, bandsN:bands(colN), bandsP:bands(colP),
+    behindN:behindN/N, behindP:behindP/N,
+    medianTotN:pctl(sortedTotN,.5), medianTotP:pctl(sortedTotP,.5),
+    p95TotN:pctl(sortedTotN,.95), p95TotP:pctl(sortedTotP,.95),
+    p05TotN:pctl(sortedTotN,.05), p05TotP:pctl(sortedTotP,.05),
+    crossN:medCross(crossN), crossP:medCross(crossP) };
+  mcCache={ sig, res };
+  return res;
 }
 
 // ---- whole-model compute (called every render) ----
@@ -500,8 +634,21 @@ function compute(){
     }
   }
 
+  // deterministic contractual bounds (index -> ±infinity) + the worst legal shock
+  const capMaxSim = boundSim(loan, caps, +1), capMinSim = boundSim(loan, caps, -1);
+  const capMaxAcc = accum(capMaxSim, armUp), capMinAcc = accum(capMinSim, armUp);
+  const ceilingRate = capMaxSim.rateA[84], floorRate = capMinSim.rateA[84];
+  const capMaxResetPI = capMaxSim.pi[84], capMaxShock = capMaxResetPI - fixPay;
+
+  // Monte Carlo (only when enabled; cached on the relevant params)
+  let mc=null;
+  if(state.mc.on){
+    mc = runMC({ loan, fixAcc, armUp, Hm, rm, caps, fixBalH: fixSim.balA[Hm-1] });
+  }
+
   RES = { down, loan, Hm, rm, armPts, fixPts, armUp, fixUp, fixSim, fixAcc, fixTot, fixPay, bal84,
-          scen, beReset, cushion, armStartPay, refiMonth, refiBE, oppNom, oppPV };
+          scen, beReset, cushion, armStartPay, refiMonth, refiBE, oppNom, oppPV,
+          capMaxSim, capMinSim, capMaxAcc, capMinAcc, ceilingRate, floorRate, capMaxResetPI, capMaxShock, mc };
 }
 function scenObjForActive(){ return scenObj(state.scenario); }
 
@@ -554,6 +701,8 @@ function renderVerdict(pv){
   const strat = state.refi.on ? `the ARM refinanced at year ${state.refi.yearN}` : "riding the ARM to its reset";
   let guardTxt="";
   if(state.refi.on && (sev.refiInfo&&sev.refiInfo.suppressed)) guardTxt = ` The hedge guard suppresses the refi in Adverse/Severe — there the ARM rides the reset.`;
+  const boundTxt = ` The contract caps the worst legal payment at <b class="warn">${fmt$(RES.capMaxResetPI)}/mo</b> (rate ${pctf(RES.ceilingRate,3)}, the ${state.arm.capInit}/${state.arm.capPeriodic}/${state.arm.capLife} ceiling).`
+    + (state.mc.on && RES.mc ? ` Across <b>${RES.mc.N}</b> Monte-Carlo paths it ends up <b class="${(pv?RES.mc.behindP:RES.mc.behindN)>0.5?'warn':'arm'}">${((pv?RES.mc.behindP:RES.mc.behindN)*100).toFixed(0)}%</b> behind the fixed at the ${state.horizon}-yr horizon.` : "");
   document.getElementById("verdict").innerHTML =
     `In the <b>${SCEN_LAB[state.scenario]}</b> world, ${strat} is `
     + (ahead ? `<b class="arm">${fmt$k(-delPV)} cheaper</b>` : `<b class="warn">${fmt$k(delPV)} more expensive</b>`)
@@ -561,19 +710,25 @@ function renderVerdict(pv){
     + `The ARM opens with a <b class="arm">${fmt$k(RES.cushion)}</b> 7-year payment cushion; the risk lives in the no-refi tail, where it falls behind the fixed in `
     + `<b class="warn">${sev.crossNR?`year ${(sev.crossNR/12).toFixed(1)} (Severe)`:"never"}</b> and `
     + `<b>${adv.crossNR?`year ${(adv.crossNR/12).toFixed(1)} (Adverse)`:"never"}</b>.`
-    + guardTxt;
+    + guardTxt + boundTxt;
 }
 
 function renderKpis(pv){
   const sc = RES.scen[state.scenario==="custom"?"base":state.scenario];
-  const shock = RES.scen.severe.resetPI - RES.fixPay;
   const cross = sc.crossNR;
   const k=[
     { lab:"7-yr payment cushion", c:"var(--arm)", big:fmt$k(RES.cushion), sub:`${fmt$( RES.fixPay-RES.armStartPay)}/mo × 84` },
     { lab:"Break-even reset rate", c:"var(--fix)", big:pctf(RES.beReset,2), sub:`fully-indexed · SOFR < ${(RES.beReset-state.arm.margin).toFixed(2)}%` },
-    { lab:`Crossover — ${SCEN_LAB[state.scenario]} (no refi)`, c:SCEN_COL[state.scenario]||"var(--accent)", big: cross?`yr ${(cross/12).toFixed(1)}`:"never", sub: cross?"ARM falls behind the fixed":"ARM stays ahead to horizon" },
-    { lab:"Worst-case reset shock", c:"var(--severe)", big:`+${fmt$k(shock)}/mo`, sub:"Severe reset P&I vs the fixed" },
+    { lab:"Max legal reset shock", c:"var(--severe)", big:`+${fmt$k(RES.capMaxShock)}/mo`, sub:`ceiling ${pctf(RES.ceilingRate,3)} · ${state.arm.capInit}/${state.arm.capPeriodic}/${state.arm.capLife} caps` },
   ];
+  if(state.mc.on && RES.mc){
+    const m=RES.mc, pb=pv?m.behindP:m.behindN, cr=pv?m.crossP:m.crossN, med=pv?m.medianTotP:m.medianTotN, p95=pv?m.p95TotP:m.p95TotN;
+    k.push({ lab:`P(ARM behind @ ${state.horizon} yr)`, c:"var(--accent)", big:(pb*100).toFixed(0)+"%", sub:`${m.N} paths · ${pv?"PV":"nominal"}, incl. payoff` });
+    k.push({ lab:"Median crossover (MC)", c:"var(--base)", big: cr.median?`yr ${cr.median.toFixed(1)}`:"never", sub:`${(cr.frac*100).toFixed(0)}% of paths cross` });
+    k.push({ lab:"Median delta · P95 tail", c: med<0?"var(--fix)":"var(--warn)", big:sgn$(med), sub:`P95 ${sgn$(p95)} (adverse tail)` });
+  } else {
+    k.push({ lab:`Crossover — ${SCEN_LAB[state.scenario]} (no refi)`, c:SCEN_COL[state.scenario]||"var(--accent)", big: cross?`yr ${(cross/12).toFixed(1)}`:"never", sub: cross?"ARM falls behind the fixed":"ARM stays ahead to horizon" });
+  }
   document.getElementById("kpis").innerHTML=k.map(x=>
     `<div class="kpi"><div class="lab"><i style="background:${x.c}"></i>${x.lab}</div>
      <div class="big num" style="color:${x.c}">${x.big}</div><div class="sub">${x.sub}</div></div>`).join("");
@@ -583,35 +738,59 @@ function renderKpis(pv){
 function renderDelta(pv){
   const {Hm}=RES, H=state.horizon;
   const W=860,Hpx=330,m={t:18,r:18,b:30,l:62},iw=W-m.l-m.r,ih=Hpx-m.t-m.b;
+  const mcOn = state.mc.on && RES.mc;
   const series = SCEN_KEYS.map(key=>{ const s=RES.scen[key], arr=pv?s.dP:s.dN;
     const pts=[]; for(let mo=0;mo<=Hm;mo++){ const idx=Math.min(359,Math.max(0,mo-1)); pts.push(mo===0?0:arr[idx]); }
     return { key, arr:pts, col:SCEN_COL[key], cross:s.crossActive }; });
+  // MC percentile bands, expanded to a per-month value at 0..Hm
+  let band=null;
+  if(mcOn){ const b=pv?RES.mc.bandsP:RES.mc.bandsN;
+    const mk=src=>{ const a=[0]; for(let mo=1;mo<=Hm;mo++) a.push(src[Math.min(359,mo-1)]); return a; };
+    band={ p05:mk(b.p05), p25:mk(b.p25), p50:mk(b.p50), p75:mk(b.p75), p95:mk(b.p95) }; }
   let mn=0,mx=0; series.forEach(s=>s.arr.forEach(v=>{ if(v<mn)mn=v; if(v>mx)mx=v; }));
+  if(band){ for(let i=0;i<=Hm;i++){ if(band.p05[i]<mn)mn=band.p05[i]; if(band.p95[i]>mx)mx=band.p95[i]; } }
   const padR=(mx-mn)*0.08||1000; mx+=padR; mn-=padR;
   const X=mo=>m.l+ (mo/Hm)*iw, Y=v=>m.t+ih*(1-(v-mn)/(mx-mn));
   // gridlines
-  let grid="",ylab=""; const ymax=niceMax(Math.max(Math.abs(mn),Math.abs(mx))); const steps=6;
+  let grid="",ylab=""; const steps=6;
   for(let s=0;s<=steps;s++){ const v=mn+(mx-mn)*s/steps, yy=Y(v); grid+=`<line x1="${m.l}" y1="${yy}" x2="${W-m.r}" y2="${yy}"/>`;
     ylab+=`<text x="${m.l-8}" y="${yy+3}" text-anchor="end">${sgn$(v)}</text>`; }
   const zeroY=Y(0);
   let xlab=""; const stepYr=H<=10?1:H<=20?2:5;
   for(let y=0;y<=H;y+=stepYr){ const xx=X(y*12); xlab+=`<text x="${xx}" y="${Hpx-9}" text-anchor="middle">${y}</text>`; }
   const path=s=>{ let d=""; s.arr.forEach((v,mo)=>{ d+=(mo?"L":"M")+X(mo).toFixed(1)+" "+Y(v).toFixed(1); }); return d; };
+  // MC fan (P5-P95 / P25-P75 areas + median line)
+  let fan="";
+  if(band){
+    const area=(lo,hi)=>{ let d="M"+X(0).toFixed(1)+" "+Y(lo[0]).toFixed(1);
+      for(let mo=1;mo<=Hm;mo++) d+="L"+X(mo).toFixed(1)+" "+Y(lo[mo]).toFixed(1);
+      for(let mo=Hm;mo>=0;mo--) d+="L"+X(mo).toFixed(1)+" "+Y(hi[mo]).toFixed(1); return d+"Z"; };
+    let dmed=""; band.p50.forEach((v,mo)=>{ dmed+=(mo?"L":"M")+X(mo).toFixed(1)+" "+Y(v).toFixed(1); });
+    fan = `<path d="${area(band.p05,band.p95)}" fill="var(--accent)" opacity=".10"/>`
+        + `<path d="${area(band.p25,band.p75)}" fill="var(--accent)" opacity=".18"/>`
+        + `<path d="${dmed}" fill="none" stroke="var(--accent)" stroke-width="2.6"/>`;
+  }
   // refi marker
   let refiMark="";
   if(state.refi.on){ const x=X(RES.refiMonth); refiMark=`<line x1="${x}" y1="${m.t}" x2="${x}" y2="${m.t+ih}" stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="4 3"/>`
     +`<text x="${x}" y="${m.t-5}" text-anchor="middle" font-size="10" fill="var(--accent)" font-weight="600">refi yr ${state.refi.yearN}</text>`; }
   // reset marker (year 7)
-  let resetMark=""; if(H>7){ const x=X(84); resetMark=`<line x1="${x}" y1="${m.t}" x2="${x}" y2="${m.t+ih}" stroke="var(--faint)" stroke-width="1" stroke-dasharray="2 3"/>`
-    +`<text x="${x}" y="${m.t+ih+0}" text-anchor="middle" font-size="9" fill="var(--faint)"></text>`; }
-  // crossover dots
-  let crosses=""; series.forEach(s=>{ if(s.cross && s.cross<=Hm){ const x=X(s.cross), y=zeroY;
-    crosses+=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4.5" fill="${s.col}" stroke="#fff" stroke-width="1.5"/>`; } });
-  const lines = series.map(s=>{ const active = (s.key===state.scenario);
-    return `<path d="${path(s)}" fill="none" stroke="${s.col}" stroke-width="${active?3:1.8}" opacity="${active?1:.62}"/>`; }).join("");
+  let resetMark=""; if(H>7){ const x=X(84); resetMark=`<line x1="${x}" y1="${m.t}" x2="${x}" y2="${m.t+ih}" stroke="var(--faint)" stroke-width="1" stroke-dasharray="2 3"/>`; }
+  // crossover dots: median crossover under MC, else each scenario's
+  let crosses="";
+  if(mcOn){ const cr=(pv?RES.mc.crossP:RES.mc.crossN).median; if(cr && cr*12<=Hm){ const x=X(cr*12);
+    crosses=`<circle cx="${x.toFixed(1)}" cy="${zeroY.toFixed(1)}" r="4.5" fill="var(--accent)" stroke="#fff" stroke-width="1.5"/>`; } }
+  else series.forEach(s=>{ if(s.cross && s.cross<=Hm){ const x=X(s.cross);
+    crosses+=`<circle cx="${x.toFixed(1)}" cy="${zeroY.toFixed(1)}" r="4.5" fill="${s.col}" stroke="#fff" stroke-width="1.5"/>`; } });
+  // scenario lines: bold-active when MC off; faint overlays (or hidden) when MC on
+  const showScenLines = !mcOn || state.mc.showScen;
+  const lines = showScenLines ? series.map(s=>{ const active=(s.key===state.scenario)&&!mcOn;
+    const op = mcOn ? 0.34 : (active?1:.62), w = mcOn ? 1.1 : (active?3:1.8);
+    return `<path d="${path(s)}" fill="none" stroke="${s.col}" stroke-width="${w}" opacity="${op}"/>`; }).join("") : "";
   document.getElementById("delta").innerHTML=
     `<svg viewBox="0 0 ${W} ${Hpx}" id="dsvg">
       <g class="grid">${grid}</g>
+      ${fan}
       <line x1="${m.l}" y1="${zeroY}" x2="${W-m.r}" y2="${zeroY}" stroke="var(--ink)" stroke-width="1.3" opacity=".55"/>
       <text x="${W-m.r}" y="${zeroY-5}" text-anchor="end" font-size="10" fill="var(--faint)">↑ ARM behind · ↓ ARM ahead</text>
       ${resetMark}${refiMark}${lines}${crosses}
@@ -621,10 +800,15 @@ function renderDelta(pv){
       <g id="ddots"></g>
       <rect x="${m.l}" y="${m.t}" width="${iw}" height="${ih}" fill="transparent" id="dhit"/>
     </svg>`;
-  document.getElementById("deltaSub").innerHTML =
-    `Running cumulative (upfront points + payments) of the ${state.refi.on?`refi-at-${state.refi.yearN} ARM`:"ride-the-reset ARM"} minus the fixed baseline, in ${pv?"PV":"nominal"} dollars. Below zero = ARM ahead; the dot marks each scenario's <b>crossover</b>. ${SCEN_LAB[state.scenario]} is bold.`;
-  document.getElementById("deltaLeg").innerHTML = SCEN_KEYS.map(k=>
-    `<span style="color:${SCEN_COL[k]}"><i class="line" style="background:${SCEN_COL[k]}"></i>${SCEN_LAB[k]}</span>`).join("")
+  document.getElementById("deltaSub").innerHTML = mcOn
+    ? `Distribution of the cumulative cost delta (${state.refi.on?`refi-at-${state.refi.yearN} ARM`:"ride-the-reset ARM"} minus fixed) over <b>${RES.mc.N}</b> Monte-Carlo SOFR paths, ${pv?"PV":"nominal"}. Shaded = P5–P95 / P25–P75; bold line = <b>median</b>. Below zero = ARM ahead. The caps clip the upper tail — the fan can't widen past the contractual ceiling.`
+    : `Running cumulative (upfront points + payments) of the ${state.refi.on?`refi-at-${state.refi.yearN} ARM`:"ride-the-reset ARM"} minus the fixed baseline, in ${pv?"PV":"nominal"} dollars. Below zero = ARM ahead; the dot marks each scenario's <b>crossover</b>. ${SCEN_LAB[state.scenario]} is bold.`;
+  document.getElementById("deltaLeg").innerHTML = (mcOn
+      ? `<span style="color:var(--accent)"><i class="line" style="background:var(--accent)"></i>MC median</span>`
+        + `<span style="color:var(--accent)"><i style="background:var(--accent);opacity:.18"></i>P25–P75</span>`
+        + `<span style="color:var(--accent)"><i style="background:var(--accent);opacity:.1"></i>P5–P95</span>`
+        + (state.mc.showScen ? SCEN_KEYS.map(k=>`<span style="color:${SCEN_COL[k]};opacity:.7"><i class="line" style="background:${SCEN_COL[k]}"></i>${SCEN_LAB[k]}</span>`).join("") : "")
+      : SCEN_KEYS.map(k=>`<span style="color:${SCEN_COL[k]}"><i class="line" style="background:${SCEN_COL[k]}"></i>${SCEN_LAB[k]}</span>`).join(""))
     + `<span style="margin-left:auto;color:var(--faint)">● crossover year · ▮ refi</span>`;
   // hover
   const svg=document.getElementById("dsvg"),hit=document.getElementById("dhit"),cross=document.getElementById("dcross"),dots=document.getElementById("ddots");
@@ -632,8 +816,14 @@ function renderDelta(pv){
     let mo=Math.round(clamp((px-m.l)/iw,0,1)*Hm); const x=X(mo);
     cross.setAttribute("x1",x); cross.setAttribute("x2",x); cross.style.opacity=1;
     let dd="",rows="";
-    series.forEach(s=>{ const v=s.arr[mo]; dd+=`<circle cx="${x.toFixed(1)}" cy="${Y(v).toFixed(1)}" r="3.5" fill="${s.col}" stroke="#fff" stroke-width="1.3"/>`;
-      rows+=`<div class="t-r"><span><i style="background:${s.col}"></i>${SCEN_LAB[s.key]}</span><b>${sgn$(v)}</b></div>`; });
+    if(mcOn){
+      const pr=[["P95",band.p95,.95],["P75",band.p75,.75],["Median",band.p50,.5],["P25",band.p25,.25],["P5",band.p05,.05]];
+      pr.forEach(([lab,a])=>{ const v=a[mo]; dd+=`<circle cx="${x.toFixed(1)}" cy="${Y(v).toFixed(1)}" r="3" fill="var(--accent)" stroke="#fff" stroke-width="1.2"/>`;
+        rows+=`<div class="t-r"><span>${lab}</span><b>${sgn$(v)}</b></div>`; });
+    } else {
+      series.forEach(s=>{ const v=s.arr[mo]; dd+=`<circle cx="${x.toFixed(1)}" cy="${Y(v).toFixed(1)}" r="3.5" fill="${s.col}" stroke="#fff" stroke-width="1.3"/>`;
+        rows+=`<div class="t-r"><span><i style="background:${s.col}"></i>${SCEN_LAB[s.key]}</span><b>${sgn$(v)}</b></div>`; });
+    }
     dots.innerHTML=dd;
     showTip(`<div class="t-h">Year ${(mo/12).toFixed(1)}</div>${rows}`, ev.clientX, ev.clientY);
   });
@@ -646,7 +836,9 @@ function renderPay(){
   const W=440,Hpx=300,m={t:14,r:12,b:26,l:52},iw=W-m.l-m.r,ih=Hpx-m.t-m.b;
   const fixPay=RES.fixPay;
   const lines = SCEN_KEYS.map(key=>({ key, sim:activeStrat(key), col:SCEN_COL[key] }));
+  const capMax=RES.capMaxSim, capMin=RES.capMinSim;
   let mx=fixPay; lines.forEach(l=>{ for(let t=0;t<Hm;t++) if(l.sim.pi[t]>mx) mx=l.sim.pi[t]; });
+  for(let t=0;t<Hm;t++) if(capMax.pi[t]>mx) mx=capMax.pi[t];          // ceiling sets the scale
   mx=niceMax(mx*1.05);
   const X=mo=>m.l+(mo/Hm)*iw, Y=v=>m.t+ih*(1-v/mx);
   let grid="",ylab=""; for(let s=0;s<=4;s++){ const v=mx*s/4,yy=Y(v); grid+=`<line x1="${m.l}" y1="${yy}" x2="${W-m.r}" y2="${yy}"/>`;
@@ -656,11 +848,15 @@ function renderPay(){
   const armLines = lines.map(l=>{ const active=l.key===state.scenario;
     return `<path d="${pathOf(l.sim)}" fill="none" stroke="${l.col}" stroke-width="${active?2.6:1.6}" opacity="${active?1:.6}"/>`; }).join("");
   const fixLine=`<line x1="${X(1)}" y1="${Y(fixPay)}" x2="${X(Hm)}" y2="${Y(fixPay)}" stroke="var(--fix)" stroke-width="2.6" stroke-dasharray="7 4"/>`;
+  // deterministic contractual bounds
+  const capMaxLine=`<path d="${pathOf(capMax)}" fill="none" stroke="var(--severe)" stroke-width="2" stroke-dasharray="2 2"/>`;
+  const capMinLine=`<path d="${pathOf(capMin)}" fill="none" stroke="var(--benign)" stroke-width="1.4" stroke-dasharray="2 2" opacity=".7"/>`;
   let refiMark=""; if(state.refi.on){ const x=X(RES.refiMonth); refiMark=`<line x1="${x}" y1="${m.t}" x2="${x}" y2="${m.t+ih}" stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="3 3"/>`; }
   document.getElementById("pay").innerHTML=
-    `<svg viewBox="0 0 ${W} ${Hpx}"><g class="grid">${grid}</g>${refiMark}${fixLine}${armLines}<g class="axis">${ylab}${xlab}</g></svg>`;
+    `<svg viewBox="0 0 ${W} ${Hpx}"><g class="grid">${grid}</g>${refiMark}${capMinLine}${fixLine}${armLines}${capMaxLine}<g class="axis">${ylab}${xlab}</g></svg>`;
   document.getElementById("payLeg").innerHTML =
     `<span style="color:var(--fix)"><i class="dash" style="color:var(--fix)"></i>Fixed ${fmt$(fixPay)}/mo</span>`
+    + `<span style="color:var(--severe)"><i class="dash" style="color:var(--severe)"></i>Max legal ${fmt$(RES.capMaxResetPI)}/mo (${pctf(RES.ceilingRate,3)})</span>`
     + SCEN_KEYS.map(k=>`<span style="color:${SCEN_COL[k]}"><i class="line" style="background:${SCEN_COL[k]}"></i>${SCEN_LAB[k]}</span>`).join("");
 }
 
@@ -706,7 +902,8 @@ function renderAssump(){
   document.getElementById("assump").innerHTML=
     `Reference is always the 30-yr fixed; deltas are ARM strategy minus fixed. Amortization, ARM reset, the rate→price closing-cost precompute, the refi event and the cost-delta metric reproduce the §6 deterministic anchors (verified at load — see the badge). `
     + `Forward SOFR &amp; fixed curves are the editable §5.6 estimates, not predictions; the ARM is fixed through the year-7 reset (~mid-2033), then resets every 6 months on the scenario's SOFR path. `
-    + `Margin, caps, index and floor are <b style="color:var(--warn)">[CONFIRM]</b> from the promissory Note — they are the highest-leverage inputs. Planning aid, not financial advice.`;
+    + `Margin, caps, index and floor are <b style="color:var(--warn)">[CONFIRM]</b> from the promissory Note — they are the highest-leverage inputs. `
+    + `The <b style="color:var(--severe)">max-legal</b> line is a pure contractual bound (index → ∞, rate walks the cap ceiling); the optional Monte-Carlo layer draws SOFR from a mean-reverting Vasicek process (and a correlated fixed), running each draw through the same cap/floor engine. Planning aid, not financial advice.`;
 }
 
 // ===========================================================================
@@ -729,6 +926,15 @@ function syncLabels(){
   g("v_guard").textContent=pctf(state.guard.threshold,3);
   g("v_ralt").textContent=state.ralt+"%";
   g("v_hz").textContent=state.horizon+" yr";
+  g("v_mcN").textContent=state.mc.paths;
+  g("v_mcTheta").textContent=pctf(state.mc.thetaS,2);
+  g("v_mcKappa").textContent=state.mc.kappaS.toFixed(1)+" (½-life "+(Math.log(2)/state.mc.kappaS).toFixed(1)+" yr)";
+  g("v_mcSigma").textContent=state.mc.sigmaS.toFixed(1)+"%";
+  g("v_mcSpread").textContent="+"+pctf(state.mc.spreadF,2);
+  g("v_mcRho").textContent=state.mc.rho.toFixed(2);
+  g("v_mcScen").textContent=state.mc.showScen?"on":"off";
+  g("mcN").value=state.mc.paths; g("mcTheta").value=state.mc.thetaS; g("mcKappa").value=state.mc.kappaS;
+  g("mcSigma").value=state.mc.sigmaS; g("mcSpread").value=state.mc.spreadF; g("mcRho").value=state.mc.rho;
   g("scenNote").innerHTML = state.scenario==="custom" ? "Editing custom forward curves below." : scenBlurb(state.scenario);
   // sync raw input values
   g("armRate").value=state.arm.rate; g("armPts").value=Math.round(RES.armPts); g("armPts").disabled=state.arm.ptsAuto;
@@ -815,6 +1021,15 @@ function init(){
   segBind("scenSeg", b=>{ state.scenario=b.dataset.s;
     document.getElementById("customGrid").style.display=state.scenario==="custom"?"block":"none"; render(); });
   document.getElementById("custReset").addEventListener("click",()=>{ state.custom=freshCustom(); buildCustom(); render(); });
+  // monte carlo
+  segBind("mcSeg", b=>{ state.mc.on=b.dataset.mc==="1";
+    document.getElementById("mcBody").style.opacity=state.mc.on?"1":".45";
+    document.getElementById("mcBody").style.pointerEvents=state.mc.on?"auto":"none"; render(); });
+  bindRange("mcN", v=>state.mc.paths=Math.round(v)); bindRange("mcTheta", v=>state.mc.thetaS=v);
+  bindRange("mcKappa", v=>state.mc.kappaS=v); bindRange("mcSigma", v=>state.mc.sigmaS=v);
+  bindRange("mcSpread", v=>state.mc.spreadF=v); bindRange("mcRho", v=>state.mc.rho=v);
+  segBind("mcScenSeg", b=>{ state.mc.showScen=b.dataset.ms==="1"; render(); });
+  document.getElementById("mcResample").addEventListener("click",()=>{ state.mc.seed=(state.mc.seed*1664525+1013904223)>>>0; render(); });
   // guard
   segBind("guardSeg", b=>{ state.guard.on=b.dataset.g==="1"; render(); });
   bindRange("guardT", v=>state.guard.threshold=v);
@@ -833,6 +1048,9 @@ function resyncSegs(){
   setSeg("refiTermSeg", state.refi.term, "t"); setSeg("refiCostSeg", state.refi.cost, "c");
   setSeg("scenSeg", state.scenario, "s"); setSeg("guardSeg", state.guard.on?1:0, "g");
   setSeg("dollarSeg", state.dollars, "d");
+  setSeg("mcSeg", state.mc.on?1:0, "mc"); setSeg("mcScenSeg", state.mc.showScen?1:0, "ms");
+  document.getElementById("mcBody").style.opacity=state.mc.on?"1":".45";
+  document.getElementById("mcBody").style.pointerEvents=state.mc.on?"auto":"none";
   document.getElementById("refiBody").style.opacity=state.refi.on?"1":".45";
   document.getElementById("refiBody").style.pointerEvents=state.refi.on?"auto":"none";
   document.getElementById("refiRateManual").style.display=state.refi.rateMode==="manual"?"block":"none";
@@ -852,6 +1070,8 @@ function selfTest(){
     ["ARM pts 5.875/30", pointsCost("arm",5.875,30), 708, 5],
     ["Fixed pts 6.25/30", pointsCost("fix",6.25,30), -747, 5],
     ["Break-even reset", breakEven(simLoan({loan:L,kind:"arm",startRate:5.875,margin:2.75,caps:{init:5,periodic:1,life:5},floor:2.75,sObj:SCEN.base,refi:null}).balA[83], pmt(L,0.0625,360)), 6.3, 0.1],
+    ["Cap ceiling rate 5/1/5", boundSim(L,{init:5,periodic:1,life:5},+1).rateA[84], 10.875, 0.001],
+    ["Cap floor rate (= floor)", boundSim(L,{init:5,periodic:1,life:5},-1).rateA[84], 2.75, 0.001],
   ];
   let pass=0; checks.forEach(([n,got,exp,tol])=>{ const ok=near(got,exp,tol); if(ok)pass++; if(!ok) console.warn("§6 anchor FAIL:",n,"got",got,"exp",exp); });
   const ok=pass===checks.length;
