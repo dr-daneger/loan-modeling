@@ -32,11 +32,22 @@ is always the reference; every output is a difference against it.**
 - **Refi-as-hedge guard** — suppresses the refi in any scenario whose fixed rate at
   year N is above a threshold, because refinanceability correlates with the benign
   world; the tool will not credit a rescue that wouldn't exist.
+- **Deterministic contractual bounds** — the *max-legal* path drives the index to
+  infinity and lets the cap/floor machinery define the worst (and best) rate legally
+  allowed: with 5/1/5 the ceiling (start + lifetime cap) is hit at the first reset.
+  Shown as a reference line on the payment timeline and a "max legal reset shock" KPI.
+- **Monte Carlo over the index** — optional. SOFR follows a mean-reverting
+  Ornstein–Uhlenbeck (Vasicek) process, the 30-yr fixed a correlated one (so a refi
+  rescue only appears in draws where rates stayed low). Every draw runs through the
+  same cap/floor reset engine, so the caps clip the upper tail. Tunables: long-run
+  mean θ, reversion speed κ, volatility σ, mortgage spread, correlation ρ, path count.
 
 ## Primary outputs
 
 - **Cumulative cost-delta curve** (ARM strategy − fixed), nominal or PV, all four
-  scenarios overlaid, refi marked, each **crossover year** dotted.
+  scenarios overlaid, refi marked, each **crossover year** dotted. With Monte Carlo on,
+  this becomes a P5–P95 / P25–P75 **fan** with a median line, and the KPIs switch to
+  P(ARM behind at horizon), the median crossover year, and median/P95 cost delta.
 - **Payment timeline** — fixed (flat), the ARM through its reset steps per scenario,
   and post-refi.
 - **Year-8 reset ladder** — the reset payment shock vs the fixed, per scenario.
