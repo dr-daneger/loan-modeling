@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ARM vs Fixed — Rate-Risk Dashboard</title>
+<style>
+  :root {
+    --bg:#f5f6f8; --panel:#ffffff; --ink:#0f1117; --muted:#5b6473; --faint:#949aa6;
+    --line:#edeff3; --line2:#e1e4ea; --field:#f7f8fb;
+    --accent:#4f46e5; --accent-soft:#eef0fe; --accent-ink:#4338ca;
+    --arm:#4f46e5; --arm-soft:#eef0fe;        /* the 7/6 ARM (the bet) */
+    --fix:#0d9488; --fix-soft:#e6f6f4;        /* 30-yr fixed (the baseline) */
+    --warn:#d6435a; --warn-soft:#fdeef0;
+    /* scenario regimes, benign -> severe */
+    --benign:#1f9d57; --base:#3b6ef5; --adverse:#e08a2b; --severe:#d6435a;
+    --benign-soft:#e6f6ee; --base-soft:#eaf0ff; --adverse-soft:#fdf1e3; --severe-soft:#fdeef0;
+    --r-card:16px; --r-ctl:10px;
+    --shadow:0 1px 2px rgba(16,18,26,.04), 0 4px 14px rgba(16,18,26,.05);
+    --shadow-lg:0 2px 4px rgba(16,18,26,.05), 0 12px 32px rgba(16,18,26,.09);
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; }
+  body { font-family:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    background:var(--bg); color:var(--ink); font-size:13.5px; line-height:1.45; letter-spacing:-.004em; -webkit-font-smoothing:antialiased; }
+  .num { font-variant-numeric:tabular-nums; }
+  #app { display:flex; min-height:100%; }
+
+  #side { width:360px; flex:0 0 360px; background:var(--panel); border-right:1px solid var(--line);
+    padding:22px 16px 48px; overflow-y:auto; height:100vh; position:sticky; top:0; }
+  #side::-webkit-scrollbar{ width:10px; }
+  #side::-webkit-scrollbar-thumb{ background:var(--line2); border-radius:8px; border:3px solid var(--panel); }
+  .brand { display:flex; align-items:baseline; gap:8px; margin-bottom:2px; }
+  .brand h1 { font-size:19px; font-weight:700; margin:0; letter-spacing:-.03em; }
+  .brand .dot { width:9px; height:9px; border-radius:50%; background:var(--arm); box-shadow:0 0 0 4px var(--arm-soft); }
+  .tagline { color:var(--muted); font-size:12px; margin:0 0 14px; }
+
+  .group{ margin-bottom:0; border-bottom:1px solid var(--line); }
+  .group:last-child{ border-bottom:0; }
+  .group > h2{ display:none; }
+  .group-h{ all:unset; box-sizing:border-box; display:flex; align-items:center; justify-content:space-between;
+    width:100%; cursor:pointer; padding:12px 4px; font-size:11px; font-weight:700; letter-spacing:.06em;
+    text-transform:uppercase; color:var(--muted); transition:color .15s; }
+  .group-h:hover{ color:var(--ink); }
+  .group-h .chev{ width:13px; height:13px; color:var(--faint); transition:transform .22s ease; }
+  .group.collapsed .group-h .chev{ transform:rotate(-90deg); }
+  .group-body{ display:grid; grid-template-rows:1fr; transition:grid-template-rows .24s ease, opacity .18s ease; opacity:1; }
+  .group.collapsed .group-body{ grid-template-rows:0fr; opacity:0; }
+  .group-body > .inner{ overflow:hidden; min-height:0; padding-bottom:8px; }
+
+  .field { margin-bottom:12px; }
+  .field > label { display:flex; justify-content:space-between; align-items:baseline;
+    font-size:12px; font-weight:500; color:var(--muted); margin-bottom:5px; }
+  .field > label .val { color:var(--ink); font-weight:600; }
+  .field > label .tag { font-size:9.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
+    color:var(--warn); background:var(--warn-soft); border-radius:5px; padding:1px 5px; margin-left:6px; }
+  input[type=number], input[type=text], select { width:100%; padding:8px 10px; border:1px solid var(--line2);
+    border-radius:var(--r-ctl); background:var(--field); color:var(--ink); font-size:13px; font-family:inherit; font-variant-numeric:tabular-nums;
+    transition:border-color .15s, box-shadow .15s, background .15s; }
+  input:focus, select:focus { outline:none; border-color:var(--accent); background:#fff; box-shadow:0 0 0 3px var(--accent-soft); }
+  input[type=range] { width:100%; accent-color:var(--accent); margin:2px 0 0; }
+  input:disabled{ opacity:.55; }
+  .hint { font-size:11px; color:var(--faint); margin:4px 0 0; line-height:1.4; }
+  .hint b{ color:var(--muted); }
+  .src { font-size:10.5px; color:var(--faint); margin-top:3px; }
+  .row2{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .row3{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:7px; }
+  .seg { display:inline-flex; background:var(--field); border:1px solid var(--line2); border-radius:var(--r-ctl); overflow:hidden; }
+  .seg.seg-full{ display:flex; width:100%; }
+  .seg.seg-full button{ flex:1; text-align:center; }
+  .seg button { border:0; background:transparent; padding:7px 10px; font-size:12px; font-weight:600; color:var(--muted); cursor:pointer; font-family:inherit; transition:background .15s,color .15s; }
+  .seg button.on { background:var(--accent); color:#fff; }
+  .pointsrow{ display:grid; grid-template-columns:1fr auto; gap:7px; align-items:center; }
+  .mini{ font-size:11px; padding:6px 8px; }
+  .lnk{ background:none; border:0; color:var(--accent); font-size:11px; cursor:pointer; font-family:inherit; padding:0; }
+  .ctlnote{ font-size:11px; color:var(--muted); background:var(--field); border:1px solid var(--line2); border-radius:8px; padding:7px 9px; margin-top:6px; }
+  .ctlnote b{ color:var(--ink); }
+  table.grid-edit{ width:100%; border-collapse:collapse; font-size:11.5px; margin-top:6px; }
+  table.grid-edit th{ color:var(--faint); font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:.04em; padding:2px 3px; text-align:right; }
+  table.grid-edit td{ padding:1px 2px; }
+  table.grid-edit td:first-child{ color:var(--muted); font-weight:600; }
+  table.grid-edit input{ padding:4px 5px; font-size:11.5px; text-align:right; }
+  table.grid-edit input.viol{ border-color:var(--adverse); background:var(--adverse-soft); }
+
+  #main { flex:1; padding:22px 26px 60px; min-width:0; }
+  .topbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; gap:16px; flex-wrap:wrap; }
+  .topbar .title h2 { margin:0; font-size:18px; font-weight:700; letter-spacing:-.02em; }
+  .topbar .title p { margin:2px 0 0; color:var(--muted); font-size:12.5px; }
+  .topctl{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .verdict { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card); box-shadow:var(--shadow);
+    padding:14px 18px; margin-bottom:18px; font-size:14px; line-height:1.55; }
+  .verdict b.fix { color:var(--fix); } .verdict b.arm { color:var(--arm); } .verdict b.warn{ color:var(--warn); }
+  .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:18px; }
+  .kpi { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card); box-shadow:var(--shadow); padding:15px 16px; transition:box-shadow .2s, transform .12s; }
+  .kpi:hover{ box-shadow:var(--shadow-lg); transform:translateY(-1px); }
+  .kpi .lab { font-size:11.5px; color:var(--muted); font-weight:600; display:flex; align-items:center; gap:6px; }
+  .kpi .lab i { width:8px; height:8px; border-radius:50%; flex:0 0 auto;}
+  .kpi .big { font-size:27px; font-weight:700; letter-spacing:-.03em; margin:6px 0 1px; line-height:1; }
+  .kpi .sub { font-size:11.5px; color:var(--faint); }
+  .cards { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--r-card); box-shadow:var(--shadow); padding:16px 18px; }
+  .card.wide { grid-column:1 / -1; }
+  .card h3 { margin:0 0 2px; font-size:14px; font-weight:700; letter-spacing:-.01em; }
+  .card .csub { margin:0 0 12px; font-size:12px; color:var(--muted); }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:8px; }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .legend i { width:11px; height:11px; border-radius:3px; }
+  .legend i.line { height:3px; width:16px; border-radius:2px; }
+  .legend i.dash{ height:0; width:16px; border-top:2.6px dashed currentColor; border-radius:0; }
+  svg { display:block; width:100%; overflow:visible; }
+  .axis text { fill:var(--faint); font-size:10.5px; font-variant-numeric:tabular-nums; }
+  .grid line { stroke:var(--line); stroke-width:1; }
+  table.ladder { width:100%; border-collapse:collapse; font-size:13px; }
+  table.ladder th, table.ladder td { padding:8px 10px; text-align:right; font-variant-numeric:tabular-nums; }
+  table.ladder th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.04em; border-bottom:1px solid var(--line2); }
+  table.ladder td:first-child, table.ladder th:first-child { text-align:left; }
+  table.ladder tr.mid td { background:var(--accent-soft); }
+  table.ladder td.cl { font-weight:700; }
+  table.ladder td.sub2{ font-size:11px; color:var(--faint); font-weight:600;}
+  .pill { display:inline-block; padding:1px 8px; border-radius:20px; font-size:11.5px; font-weight:700; }
+  .pill.good { background:var(--fix-soft); color:var(--fix); }
+  .pill.bad { background:var(--warn-soft); color:var(--warn); }
+  .pill.mut { background:var(--field); color:var(--muted); }
+  .tip { position:fixed; pointer-events:none; z-index:50; background:#11151d; color:#fff; font-size:12px;
+    padding:8px 10px; border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.25); opacity:0; transition:opacity .1s;
+    font-variant-numeric:tabular-nums; max-width:280px; }
+  .tip .t-h { font-weight:700; margin-bottom:3px; }
+  .tip .t-r { display:flex; justify-content:space-between; gap:14px; }
+  .tip .t-r i { width:8px; height:8px; border-radius:2px; display:inline-block; margin-right:5px; }
+  .crosshair { stroke:var(--faint); stroke-width:1; stroke-dasharray:3 3; }
+  .footnote { color:var(--faint); font-size:11.5px; margin-top:18px; line-height:1.5; }
+  .footnote a { color:var(--accent); text-decoration:none; }
+  @media (max-width:1080px){ .kpis{grid-template-columns:repeat(2,1fr);} .cards{grid-template-columns:1fr;} }
+  @media (max-width:760px){ #app{flex-direction:column;} #side{width:100%;flex:0 0 auto;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line);} #main{padding:16px;} .kpis{grid-template-columns:1fr 1fr;} }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <div class="brand"><span class="dot"></span><h1>ARM&nbsp;vs&nbsp;Fixed</h1></div>
+    <p class="tagline">7/6 ARM rate-risk vs the 30-yr fixed baseline · 17730 SW Pheasant Ln</p>
+
+    <div class="group">
+      <h2>Loan &amp; down payment</h2>
+      <div class="field"><label>Down payment</label>
+        <div class="seg seg-full" id="downSeg">
+          <button data-d="25">25% down</button>
+          <button data-d="30" class="on">30% down</button></div></div>
+      <p class="ctlnote" id="loanNote"></p>
+      <div class="field" style="margin-top:10px"><label>Include opportunity cost of cash freed by 25% down <span class="val" id="v_opp"></span></label>
+        <div class="seg seg-full" id="oppSeg"><button data-o="1" class="on">On</button><button data-o="0">Off</button></div></div>
+      <p class="hint">25% down frees <b>+$68,375</b> vs 30%. With this on, that cash is modeled invested at r<sub>alt</sub> and credited to PV totals, making the down-payment choice an apples-to-apples comparison (it cancels in any same-down ARM&minus;fixed delta).</p>
+    </div>
+
+    <div class="group">
+      <h2>7/6 ARM product</h2>
+      <div class="field"><label>Start (teaser) rate <span class="val" id="v_armRate"></span></label>
+        <input type="number" id="armRate" step="0.125" min="3" max="9"></div>
+      <div class="field"><label>Discount points (auto from rate sheet) <span class="val" id="v_armPts"></span></label>
+        <div class="pointsrow">
+          <input type="number" id="armPts" step="100">
+          <button class="seg mini" id="armPtsAuto" style="white-space:nowrap" title="recompute from the rate sheet">↺ auto</button></div></div>
+      <div class="field"><label>Margin (fixed for life) <span><span class="val" id="v_margin"></span><span class="tag">confirm</span></span></label>
+        <input type="range" id="margin" min="2.25" max="3.00" step="0.0625"></div>
+      <div class="field"><label>Index <span class="val">30-day avg SOFR</span></label>
+        <p class="hint" style="margin-top:0">Fully-indexed reset rate = SOFR + margin, rounded to 1/8%, then clamped by the caps. SOFR follows the active scenario (below).</p></div>
+      <div class="field"><label>Caps — initial / periodic / lifetime <span class="tag">confirm</span></label>
+        <div class="row3">
+          <input type="number" id="capInit" step="1" min="1" max="6" title="initial cap">
+          <input type="number" id="capPeriodic" step="1" min="1" max="3" title="periodic cap">
+          <input type="number" id="capLife" step="1" min="3" max="7" title="lifetime cap"></div>
+        <p class="hint">Default <b>5 / 1 / 5</b>. Source docs floated 2/2/5 and 5/2/5 — try them. First reset is bounded by the initial cap, each later reset by the periodic cap, and every reset by the lifetime cap.</p></div>
+      <div class="field"><label>Floor (rate never below) <span class="val" id="v_floor"></span></label>
+        <input type="number" id="floor" step="0.125" min="0" max="6"></div>
+    </div>
+
+    <div class="group">
+      <h2>30-yr fixed (baseline)</h2>
+      <div class="field"><label>Note rate <span class="val" id="v_fixRate"></span></label>
+        <input type="number" id="fixRate" step="0.125" min="4" max="9"></div>
+      <div class="field"><label>Discount points (auto from rate sheet) <span class="val" id="v_fixPts"></span></label>
+        <div class="pointsrow">
+          <input type="number" id="fixPts" step="100">
+          <button class="seg mini" id="fixPtsAuto" style="white-space:nowrap" title="recompute from the rate sheet">↺ auto</button></div></div>
+      <p class="hint">Every output is a delta against this product. Points auto-compute from the fixed rate sheet at the selected rate &amp; down; negative = lender credit.</p>
+    </div>
+
+    <div class="group">
+      <h2>Closing costs (non-points)</h2>
+      <div class="field"><label>Purchase — title, escrow, admin, prepaids <span class="val" id="v_clPur"></span></label>
+        <input type="number" id="clPur" step="500"></div>
+      <div class="field"><label>Refi closing costs <span class="val" id="v_clRefi"></span></label>
+        <input type="number" id="clRefi" step="500"></div>
+      <p class="hint">Not in the rate sheets — set from the actual Loan Estimate / Closing Disclosure. Equal for both products, so they cancel in the ARM&minus;fixed delta; they affect absolute totals and the refi break-even.</p>
+    </div>
+
+    <div class="group">
+      <h2>Refi event (escape the reset)</h2>
+      <div class="field"><label>Refinance the ARM</label>
+        <div class="seg seg-full" id="refiSeg"><button data-r="1">Enabled</button><button data-r="0" class="on">Off</button></div></div>
+      <div id="refiBody" style="opacity:.45;pointer-events:none">
+        <div class="field"><label>Refi at year N <span class="val" id="v_refiN"></span></label>
+          <input type="range" id="refiN" min="0.5" max="7" step="0.5"></div>
+        <div class="field"><label>New rate</label>
+          <div class="seg seg-full" id="refiRateSeg"><button data-m="scenario" class="on">Use scenario fixed</button><button data-m="manual">Manual</button></div></div>
+        <div class="field" id="refiRateManual" style="display:none"><label>Manual new rate <span class="val" id="v_refiRate"></span></label>
+          <input type="number" id="refiRate" step="0.125" min="3" max="9"></div>
+        <div class="field"><label>New term</label>
+          <div class="seg seg-full" id="refiTermSeg"><button data-t="30" class="on">Fresh 30 yr</button><button data-t="remaining">Remaining (~23 yr)</button></div></div>
+        <div class="field"><label>Cost handling</label>
+          <div class="seg seg-full" id="refiCostSeg"><button data-c="rolled" class="on">Roll in</button><button data-c="paid">Pay cash</button><button data-c="noCost">No-cost</button></div>
+          <p class="hint" id="refiCostNote"></p></div>
+      </div>
+    </div>
+
+    <div class="group">
+      <h2>Rate scenario</h2>
+      <div class="field">
+        <div class="seg seg-full" id="scenSeg" style="flex-wrap:wrap">
+          <button data-s="benign">Benign</button>
+          <button data-s="base" class="on">Base</button>
+          <button data-s="adverse">Adverse</button>
+          <button data-s="severe">Severe</button>
+          <button data-s="custom">Custom</button></div></div>
+      <p class="hint" id="scenNote"></p>
+      <div id="customGrid" style="display:none">
+        <p class="hint" style="margin-bottom:2px"><b>Custom forward curves</b> (calendar-year %). Cells flag a year-over-year move &gt; 1.5% (the §5.4 soft velocity cap).</p>
+        <table class="grid-edit" id="custTable"></table>
+        <button class="lnk" id="custReset" style="margin-top:6px">Reset custom to Base grid</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <h2>Refi-as-hedge guard</h2>
+      <div class="field"><label>Suppress refi when rates rose</label>
+        <div class="seg seg-full" id="guardSeg"><button data-g="1" class="on">On</button><button data-g="0">Off</button></div></div>
+      <div class="field"><label>Refinanceable only if scenario fixed &lt; <span class="val" id="v_guard"></span></label>
+        <input type="range" id="guardT" min="5" max="8" step="0.125"></div>
+      <p class="hint">Refinanceability correlates with the benign world — the adverse reset tail and the &ldquo;can't refi&rdquo; condition arrive together. With this on, a refi is ignored in any scenario whose fixed rate at year N is at/above the threshold, so bracket C can't credit a rescue that wouldn't exist.</p>
+    </div>
+
+    <div class="group">
+      <h2>Valuation &amp; horizon</h2>
+      <div class="field"><label>Alternative return r<sub>alt</sub> (PV discount) <span class="val" id="v_ralt"></span></label>
+        <input type="range" id="ralt" min="3" max="9" step="0.5"></div>
+      <p class="hint">PV discounts every flow at r<sub>alt</sub>; front-loaded ARM savings vs back-loaded reset risk make PV favor the ARM. Conservative 4% / aggressive 7%.</p>
+      <div class="field" style="margin-top:10px"><label>Horizon (years to evaluate) <span class="val" id="v_hz"></span></label>
+        <input type="range" id="hz" min="7" max="30" step="1"></div>
+      <p class="hint">Total cost to the horizon adds the payoff balance still owed at that year. Markers at 7 / 10 / 15.</p>
+      <button class="seg mini" id="reset" style="width:100%;margin-top:10px;justify-content:center">Reset all to defaults</button>
+      <p class="hint" id="valStatus"></p>
+    </div>
+  </aside>
+
+  <main id="main">
+    <div class="topbar">
+      <div class="title"><h2>Risk profile — 7/6 ARM relative to the fixed</h2><p id="subhead"></p></div>
+      <div class="topctl">
+        <div class="seg" id="dollarSeg">
+          <button data-d="nominal" class="on">Nominal $</button>
+          <button data-d="pv">PV $</button></div>
+      </div>
+    </div>
+    <div class="verdict" id="verdict"></div>
+    <div class="kpis" id="kpis"></div>
+    <div class="cards">
+      <div class="card wide">
+        <h3>Cumulative cost delta — ARM strategy &minus; fixed baseline</h3>
+        <p class="csub" id="deltaSub"></p>
+        <div id="delta"></div>
+        <div class="legend" id="deltaLeg"></div>
+      </div>
+      <div class="card">
+        <h3>Monthly payment timeline (P&amp;I)</h3>
+        <p class="csub">Fixed is flat; the ARM holds the teaser through the year-7 reset, then steps to each scenario's reset path. A refi (if enabled) re-amortizes to a flat line.</p>
+        <div id="pay"></div>
+        <div class="legend" id="payLeg"></div>
+      </div>
+      <div class="card">
+        <h3>Year-8 reset ladder (re-amortize the balance)</h3>
+        <p class="csub">First reset P&amp;I on the ~$856k balance over the remaining ~23 yr, per scenario — the reset payment shock vs the fixed.</p>
+        <div id="ladder"></div>
+      </div>
+      <div class="card wide">
+        <h3>Scenario comparison — total cost &amp; crossover by strategy</h3>
+        <p class="csub" id="tableSub"></p>
+        <div id="bigtable"></div>
+      </div>
+    </div>
+    <p class="footnote" id="assump"></p>
+  </main>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+"use strict";
+// ===========================================================================
+// 7/6 ARM vs 30-yr fixed — rate-risk dashboard.  Self-contained, no server,
+// no storage (all state in memory).  Inherits tuition-runway's control idiom,
+// state+render() reactivity, and hand-built inline-SVG charts.
+//
+// The reference is ALWAYS the 30-yr fixed; every output is a delta against it.
+// The model spine (amortization, ARM reset, closing-cost precompute, refi
+// event, the delta metric) is validated against the §6 anchors at load — see
+// selfTest() and the console / footer badge.
+// ===========================================================================
+
+const PROPERTY = 1367500, CLOSE_CAL = 2026.5;     // close July 15 2026 -> calendar 2026.5
+const LOANS = { 25: 1025625, 30: 957250 };
+const LTV   = { 25: 75, 30: 70 };
+const NOCOST_BUMP = 0.30;                          // ~+0.25-0.375% on a no-cost refi rate
+
+// Rate sheets: rate -> [price@25%down, price@30%down].  cost = (100-price)/100*loan.
+const PRICE = {
+  arm: [[5.750,99.371,99.537],[5.875,99.760,99.926],[5.990,100.107,100.273],[6.000,100.137,100.303],[6.250,100.800,100.800]],
+  fix: [[5.750,98.064,98.230],[5.875,98.548,98.714],[5.990,98.980,99.146],[6.000,99.018,99.184],[6.250,99.912,100.078]],
+};
+const PRICE_CAP = 100.8;
+
+// §5.6 default forward curves (calendar-year %).  long = 2034+ (mean-revert band).
+const YEARS_G = [2026,2027,2028,2029,2030,2031,2032,2033];
+const SCEN = {
+  benign:  { fix:[6.50,6.25,5.90,5.60,5.40,5.30,5.25,5.25], fixLong:5.25, sofr:[3.60,3.50,3.10,2.75,2.50,2.50,2.50,2.50], sofrLong:2.50 },
+  base:    { fix:[6.50,6.60,6.50,6.35,6.20,6.10,6.05,6.00], fixLong:6.00, sofr:[3.60,3.85,3.75,3.60,3.50,3.50,3.50,3.50], sofrLong:3.50 },
+  adverse: { fix:[6.50,6.90,7.20,7.40,7.30,7.10,6.90,6.80], fixLong:6.75, sofr:[3.60,4.25,4.50,4.50,4.40,4.30,4.40,4.50], sofrLong:4.50 },
+  severe:  { fix:[6.50,7.25,7.90,8.25,8.40,8.10,7.80,7.60], fixLong:7.50, sofr:[3.60,4.75,5.25,5.50,5.50,5.40,5.50,5.50], sofrLong:5.50 },
+};
+const SCEN_KEYS = ["benign","base","adverse","severe"];
+const SCEN_LAB  = { benign:"Benign", base:"Base", adverse:"Adverse", severe:"Severe", custom:"Custom" };
+const SCEN_COL  = { benign:"var(--benign)", base:"var(--base)", adverse:"var(--adverse)", severe:"var(--severe)", custom:"var(--accent)" };
+
+function freshCustom(){ const b=SCEN.base; return { fix:b.fix.slice(), fixLong:b.fixLong, sofr:b.sofr.slice(), sofrLong:b.sofrLong }; }
+
+const state = {
+  down: 30,
+  arm: { rate:5.875, ptsAuto:true, pts:0, margin:2.75, capInit:5, capPeriodic:1, capLife:5, floor:2.75 },
+  fix: { rate:6.25, ptsAuto:true, pts:0 },
+  closing: { purchase:10000, refi:8000 },
+  refi: { on:false, yearN:5, rateMode:"scenario", rate:5.75, term:"30", cost:"rolled" },
+  scenario: "base",
+  custom: freshCustom(),
+  guard: { on:true, threshold:6.0 },
+  ralt: 7, horizon: 30,
+  dollars: "nominal",
+  opp: true,
+};
+const DEFAULTS = JSON.parse(JSON.stringify(state));
+
+// ---- core math ----
+function pmt(L, annual, n){ const i=annual/12; if(i===0) return L/n; const g=Math.pow(1+i,n); return L*i*g/(g-1); }
+const clamp = (x,lo,hi)=>Math.min(hi,Math.max(lo,x));
+const round8 = x=>Math.round(x/0.125)*0.125;
+
+// price at a rate, interpolated within the chosen down-payment column, capped at 100.8.
+function priceAt(grid, rate, down){
+  const col = down===25 ? 1 : 2, rows = PRICE[grid];
+  if(rate<=rows[0][0]) return Math.min(rows[0][col], PRICE_CAP);
+  if(rate>=rows[rows.length-1][0]) return Math.min(rows[rows.length-1][col], PRICE_CAP);
+  for(let k=0;k<rows.length-1;k++){
+    const a=rows[k], b=rows[k+1];
+    if(rate>=a[0] && rate<=b[0]){ const f=(rate-a[0])/(b[0]-a[0]); return Math.min(a[col]+f*(b[col]-a[col]), PRICE_CAP); }
+  }
+  return Math.min(rows[rows.length-1][col], PRICE_CAP);
+}
+function pointsCost(grid, rate, down){ return (100 - priceAt(grid, rate, down))/100 * LOANS[down]; }
+
+// scenario rate at a fractional calendar year (flat before 2026, long-run from 2034).
+function curveAt(obj, key, cy){
+  const arr = obj[key], long = obj[key+"Long"];
+  if(cy<=YEARS_G[0]) return arr[0];
+  if(cy>=2034) return long;
+  if(cy>=2033) return arr[7] + (long-arr[7])*(cy-2033);     // 2033 -> long across the year
+  const y0=Math.floor(cy), i0=y0-2026, f=cy-y0;
+  return arr[i0] + (arr[i0+1]-arr[i0])*f;
+}
+function scenObj(key){ return key==="custom" ? state.custom : SCEN[key]; }
+const calOf = t => CLOSE_CAL + (t-1)/12;            // calendar year of payment month t (1-indexed)
+
+// Simulate a loan month-by-month.  Handles ARM resets and an optional refi.
+// cfg: {loan, kind:'arm'|'fix', startRate, margin, caps:{init,periodic,life}, floor, sObj, refi}
+// refi: {use, month, newRate, cost:'rolled'|'paid'|'noCost', costAmount, term:'30'|'remaining'}
+function simLoan(cfg){
+  let bal=cfg.loan, rate=cfg.startRate, pay=pmt(bal, rate/100, 360), prevReset=null, refiActive=false;
+  const pi=new Float64Array(360), balA=new Float64Array(360), rateA=new Float64Array(360);
+  let refiPaid=0, refiMonth=(cfg.refi && cfg.refi.use) ? cfg.refi.month : -1;
+  for(let t=1;t<=360;t++){
+    if(t===refiMonth){
+      let nr=cfg.refi.newRate;
+      let principal = bal + (cfg.refi.cost==="rolled" ? cfg.refi.costAmount : 0);
+      if(cfg.refi.cost==="noCost") nr += NOCOST_BUMP;
+      if(cfg.refi.cost==="paid")  refiPaid = cfg.refi.costAmount;
+      const term = cfg.refi.term==="remaining" ? (361-t) : 360;
+      bal=principal; rate=nr; pay=pmt(bal, rate/100, term); refiActive=true; prevReset=null;
+    }
+    if(cfg.kind==="arm" && !refiActive && t>84 && (t-85)%6===0){   // reset at 85, 91, 97, ...
+      const cy=calOf(t);
+      let fi = round8(curveAt(cfg.sObj,"sofr",cy) + cfg.margin);
+      let r = prevReset===null ? clamp(fi, cfg.startRate-cfg.caps.init, cfg.startRate+cfg.caps.init)
+                               : clamp(fi, prevReset-cfg.caps.periodic, prevReset+cfg.caps.periodic);
+      r = clamp(r, cfg.startRate-cfg.caps.life, cfg.startRate+cfg.caps.life);
+      r = Math.max(r, cfg.floor);
+      prevReset=r; rate=r; pay=pmt(bal, rate/100, 361-t);
+    }
+    const i=rate/100/12, interest=bal*i; let prin=pay-interest;
+    if(prin>bal) prin=bal; if(prin<0) prin=0; bal-=prin;
+    pi[t-1]=pay; balA[t-1]=bal; rateA[t-1]=rate;
+  }
+  return { pi, balA, rateA, refiPaid, refiMonth };
+}
+
+// ---- whole-model compute (called every render) ----
+let RES=null;
+function compute(){
+  const down=state.down, loan=LOANS[down], Hm=Math.round(state.horizon*12), rm=state.ralt/100/12;
+  const armPts = state.arm.ptsAuto ? pointsCost("arm", state.arm.rate, down) : state.arm.pts;
+  const fixPts = state.fix.ptsAuto ? pointsCost("fix", state.fix.rate, down) : state.fix.pts;
+  const armUp = armPts + state.closing.purchase, fixUp = fixPts + state.closing.purchase;
+  const caps = { init:state.arm.capInit, periodic:state.arm.capPeriodic, life:state.arm.capLife };
+  const oppNom = state.opp ? PROPERTY*(30-down)/100 * Math.pow(1+rm,Hm) : 0;   // freed cash grown to horizon
+  const oppPV  = state.opp ? PROPERTY*(30-down)/100 : 0;                        // ...its PV is just the cash
+
+  // accumulate cumulative nominal + PV cost (upfront + payments + any cash refi cost)
+  function accum(sim, upfront){
+    const cumN=new Float64Array(360), cumP=new Float64Array(360);
+    let sN=upfront, sP=upfront;
+    for(let t=1;t<=360;t++){
+      sN+=sim.pi[t-1]; sP+=sim.pi[t-1]/Math.pow(1+rm,t);
+      if(t===sim.refiMonth && sim.refiPaid){ sN+=sim.refiPaid; sP+=sim.refiPaid/Math.pow(1+rm,t); }
+      cumN[t-1]=sN; cumP[t-1]=sP;
+    }
+    return { cumN, cumP };
+  }
+  function totals(sim, acc){
+    const pvCarry = sim.balA[Hm-1]/Math.pow(1+rm,Hm), nomCarry = sim.balA[Hm-1];
+    return { pv: acc.cumP[Hm-1] + pvCarry - oppPV, nom: acc.cumN[Hm-1] + nomCarry - oppNom };
+  }
+
+  // baseline fixed (scenario-independent; no refi by default)
+  const fixSim = simLoan({ loan, kind:"fix", startRate:state.fix.rate, refi:null });
+  const fixAcc = accum(fixSim, fixUp);
+  const fixTot = totals(fixSim, fixAcc);
+  const fixPay = fixSim.pi[0];
+  const bal84  = fixSim ? simLoan({loan, kind:"arm", startRate:state.arm.rate, margin:state.arm.margin, caps, floor:state.arm.floor, sObj:SCEN.base, refi:null}).balA[83] : 0;
+
+  const refiMonth = Math.round(state.refi.yearN*12);
+  function makeRefi(sObj, force){
+    if(!(state.refi.on || force)) return null;
+    const cyN = calOf(refiMonth);
+    // guard: a refi is only credited where the scenario stays refinanceable
+    const suppressed = state.guard.on && curveAt(sObj,"fix",cyN) >= state.guard.threshold;
+    if(suppressed) return { use:false, suppressed:true };
+    const newRate = state.refi.rateMode==="scenario" ? curveAt(sObj,"fix",cyN) : state.refi.rate;
+    return { use:true, suppressed:false, month:refiMonth, newRate, cost:state.refi.cost, costAmount:state.closing.refi, term:state.refi.term };
+  }
+
+  // per scenario: ARM no-refi, ARM refi@N, deltas vs baseline
+  const scen = {};
+  SCEN_KEYS.forEach(key=>{
+    const sObj=SCEN[key];
+    const armCfg = { loan, kind:"arm", startRate:state.arm.rate, margin:state.arm.margin, caps, floor:state.arm.floor, sObj };
+    const noRefi = simLoan({ ...armCfg, refi:null });
+    const refiInfo = makeRefi(sObj, true);
+    const refiSim  = (refiInfo && refiInfo.use) ? simLoan({ ...armCfg, refi:refiInfo }) : noRefi;
+    const nrAcc=accum(noRefi, armUp), rfAcc=accum(refiSim, armUp);
+    const nrTot=totals(noRefi, nrAcc), rfTot=totals(refiSim, rfAcc);
+    // delta arrays vs baseline fixed (running cumulative payment+upfront = the cushion-erosion curve)
+    const dN=new Float64Array(360), dP=new Float64Array(360), aAcc = state.refi.on ? rfAcc : nrAcc;
+    for(let t=0;t<360;t++){ dN[t]=aAcc.cumN[t]-fixAcc.cumN[t]; dP[t]=aAcc.cumP[t]-fixAcc.cumP[t]; }
+    scen[key] = {
+      key, noRefi, refiSim, refiInfo, nrTot, rfTot, nrAcc, rfAcc, dN, dP,
+      resetPI: noRefi.pi[84], resetRate: noRefi.rateA[84],
+      crossNR: crossover(state.dollars==="pv"?dpOf(nrAcc,fixAcc,"P"):dpOf(nrAcc,fixAcc,"N"), Hm),
+      crossActive: crossover(state.dollars==="pv"?dP:dN, Hm),
+      delActiveTot: state.refi.on ? rfTot : nrTot,
+    };
+  });
+
+  function dpOf(a,f,which){ const r=new Float64Array(360); for(let t=0;t<360;t++) r[t]=(which==="P"?a.cumP[t]-f.cumP[t]:a.cumN[t]-f.cumN[t]); return r; }
+
+  // break-even reset rate (re-amortized P&I equals the fixed payment)
+  const beReset = breakEven(bal84, fixPay);
+
+  // 7-yr payment cushion (anchor ~$19,440)
+  const armStartPay = pmt(loan, state.arm.rate/100, 360);
+  const cushion = (fixPay - armStartPay)*84;
+
+  // refi break-even (active scenario, if refi on & not suppressed)
+  const act = scen[ state.scenario==="custom" ? "base" : state.scenario ] || scen.base;
+  let refiBE=null;
+  if(state.refi.on){
+    const aS = scenObjForActive();
+    const info = makeRefi(aS, false);
+    if(info && info.use){
+      const nr=simLoan({loan,kind:"arm",startRate:state.arm.rate,margin:state.arm.margin,caps,floor:state.arm.floor,sObj:aS,refi:null});
+      const rf=simLoan({loan,kind:"arm",startRate:state.arm.rate,margin:state.arm.margin,caps,floor:state.arm.floor,sObj:aS,refi:info});
+      let save=0, beM=null; const cost = state.refi.cost==="paid"?state.closing.refi:0;
+      for(let t=refiMonth;t<360;t++){ save+=nr.pi[t]-rf.pi[t]; if(save>=cost){ beM=t+1; break; } }
+      const lifeSave = (function(){ let s=0; for(let t=0;t<Hm;t++) s+=nr.pi[t]-rf.pi[t]; return s - (state.refi.cost==="paid"?state.closing.refi:0); })();
+      refiBE = { month:beM, lifeSave };
+    }
+  }
+
+  RES = { down, loan, Hm, rm, armPts, fixPts, armUp, fixUp, fixSim, fixAcc, fixTot, fixPay, bal84,
+          scen, beReset, cushion, armStartPay, refiMonth, refiBE, oppNom, oppPV };
+}
+function scenObjForActive(){ return scenObj(state.scenario); }
+
+function crossover(delta, Hm){           // first month the ARM falls behind (neg -> pos), after a head start
+  let wasNeg=false;
+  for(let t=1;t<Hm;t++){ if(delta[t-1]<0) wasNeg=true; if(wasNeg && delta[t-1]<=0 && delta[t]>0) return t+1; }
+  if(delta[0]>0 && !wasNeg){ for(let t=1;t<Hm;t++) if(delta[t]<0) return null; return 1; }
+  return null;
+}
+function breakEven(bal84, fixPay){
+  let lo=2, hi=12; for(let k=0;k<48;k++){ const m=(lo+hi)/2; if(pmt(bal84,m/100,276)>fixPay) hi=m; else lo=m; } return (lo+hi)/2;
+}
+
+// ---- formatting ----
+const usd0=new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0});
+const fmt$=v=>usd0.format(Math.round(v));
+const fmt$k=v=>Math.abs(v)>=1e6?(v<0?"-$":"$")+(Math.abs(v)/1e6).toFixed(2)+"M":Math.abs(v)>=1e3?(v<0?"-$":"$")+Math.round(Math.abs(v)/1e3)+"k":fmt$(v);
+const sgn$=v=>(v>0?"+":"")+fmt$k(v);
+const pctf=(v,d=2)=>v.toFixed(d)+"%";
+function niceMax(v){ if(v<=0)return 1; const e=Math.pow(10,Math.floor(Math.log10(v))); const f=v/e; return (f<=1?1:f<=2?2:f<=2.5?2.5:f<=5?5:10)*e; }
+
+const tip=document.getElementById("tip");
+function showTip(h,x,y){ tip.innerHTML=h; tip.style.opacity=1;
+  const tw=tip.offsetWidth, th=tip.offsetHeight, pad=12; let left=x+14, top=y+14;
+  if(left+tw>window.innerWidth-pad) left=x-tw-14; if(top+th>window.innerHeight-pad) top=y-th-14;
+  tip.style.left=Math.max(pad,left)+"px"; tip.style.top=Math.max(pad,top)+"px"; }
+const hideTip=()=>tip.style.opacity=0;
+
+// ===========================================================================
+// Render
+// ===========================================================================
+function render(){
+  compute();
+  const pv = state.dollars==="pv";
+  document.getElementById("subhead").textContent =
+    `${state.down}% down · ${fmt$(RES.loan)} loan (${LTV[state.down]}% LTV) · ${SCEN_LAB[state.scenario]} scenario · ${pv?`PV @ ${state.ralt}%`:"nominal"} · ${state.horizon}-yr horizon`;
+  renderVerdict(pv); renderKpis(pv); renderDelta(pv); renderPay(); renderLadder(); renderTable(pv); renderAssump();
+  syncLabels();
+}
+
+function activeStrat(key){ return state.refi.on ? RES.scen[key].refiSim : RES.scen[key].noRefi; }
+
+function renderVerdict(pv){
+  const sc = RES.scen[state.scenario==="custom"?"base":state.scenario];
+  const dTot = sc.delActiveTot, base = RES.fixTot;
+  const delPV = (pv?dTot.pv:dTot.nom) - (pv?base.pv:base.nom);
+  const ahead = delPV<0;
+  const cross = sc.crossActive;
+  const sev = RES.scen.severe, adv = RES.scen.adverse;
+  const strat = state.refi.on ? `the ARM refinanced at year ${state.refi.yearN}` : "riding the ARM to its reset";
+  let guardTxt="";
+  if(state.refi.on && (sev.refiInfo&&sev.refiInfo.suppressed)) guardTxt = ` The hedge guard suppresses the refi in Adverse/Severe — there the ARM rides the reset.`;
+  document.getElementById("verdict").innerHTML =
+    `In the <b>${SCEN_LAB[state.scenario]}</b> world, ${strat} is `
+    + (ahead ? `<b class="arm">${fmt$k(-delPV)} cheaper</b>` : `<b class="warn">${fmt$k(delPV)} more expensive</b>`)
+    + ` than the <b class="fix">30-yr fixed</b> over ${state.horizon} years (${pv?"PV":"nominal"}, with payoff). `
+    + `The ARM opens with a <b class="arm">${fmt$k(RES.cushion)}</b> 7-year payment cushion; the risk lives in the no-refi tail, where it falls behind the fixed in `
+    + `<b class="warn">${sev.crossNR?`year ${(sev.crossNR/12).toFixed(1)} (Severe)`:"never"}</b> and `
+    + `<b>${adv.crossNR?`year ${(adv.crossNR/12).toFixed(1)} (Adverse)`:"never"}</b>.`
+    + guardTxt;
+}
+
+function renderKpis(pv){
+  const sc = RES.scen[state.scenario==="custom"?"base":state.scenario];
+  const shock = RES.scen.severe.resetPI - RES.fixPay;
+  const cross = sc.crossNR;
+  const k=[
+    { lab:"7-yr payment cushion", c:"var(--arm)", big:fmt$k(RES.cushion), sub:`${fmt$( RES.fixPay-RES.armStartPay)}/mo × 84` },
+    { lab:"Break-even reset rate", c:"var(--fix)", big:pctf(RES.beReset,2), sub:`fully-indexed · SOFR < ${(RES.beReset-state.arm.margin).toFixed(2)}%` },
+    { lab:`Crossover — ${SCEN_LAB[state.scenario]} (no refi)`, c:SCEN_COL[state.scenario]||"var(--accent)", big: cross?`yr ${(cross/12).toFixed(1)}`:"never", sub: cross?"ARM falls behind the fixed":"ARM stays ahead to horizon" },
+    { lab:"Worst-case reset shock", c:"var(--severe)", big:`+${fmt$k(shock)}/mo`, sub:"Severe reset P&I vs the fixed" },
+  ];
+  document.getElementById("kpis").innerHTML=k.map(x=>
+    `<div class="kpi"><div class="lab"><i style="background:${x.c}"></i>${x.lab}</div>
+     <div class="big num" style="color:${x.c}">${x.big}</div><div class="sub">${x.sub}</div></div>`).join("");
+}
+
+// ---- primary: cumulative cost-delta curve ----
+function renderDelta(pv){
+  const {Hm}=RES, H=state.horizon;
+  const W=860,Hpx=330,m={t:18,r:18,b:30,l:62},iw=W-m.l-m.r,ih=Hpx-m.t-m.b;
+  const series = SCEN_KEYS.map(key=>{ const s=RES.scen[key], arr=pv?s.dP:s.dN;
+    const pts=[]; for(let mo=0;mo<=Hm;mo++){ const idx=Math.min(359,Math.max(0,mo-1)); pts.push(mo===0?0:arr[idx]); }
+    return { key, arr:pts, col:SCEN_COL[key], cross:s.crossActive }; });
+  let mn=0,mx=0; series.forEach(s=>s.arr.forEach(v=>{ if(v<mn)mn=v; if(v>mx)mx=v; }));
+  const padR=(mx-mn)*0.08||1000; mx+=padR; mn-=padR;
+  const X=mo=>m.l+ (mo/Hm)*iw, Y=v=>m.t+ih*(1-(v-mn)/(mx-mn));
+  // gridlines
+  let grid="",ylab=""; const ymax=niceMax(Math.max(Math.abs(mn),Math.abs(mx))); const steps=6;
+  for(let s=0;s<=steps;s++){ const v=mn+(mx-mn)*s/steps, yy=Y(v); grid+=`<line x1="${m.l}" y1="${yy}" x2="${W-m.r}" y2="${yy}"/>`;
+    ylab+=`<text x="${m.l-8}" y="${yy+3}" text-anchor="end">${sgn$(v)}</text>`; }
+  const zeroY=Y(0);
+  let xlab=""; const stepYr=H<=10?1:H<=20?2:5;
+  for(let y=0;y<=H;y+=stepYr){ const xx=X(y*12); xlab+=`<text x="${xx}" y="${Hpx-9}" text-anchor="middle">${y}</text>`; }
+  const path=s=>{ let d=""; s.arr.forEach((v,mo)=>{ d+=(mo?"L":"M")+X(mo).toFixed(1)+" "+Y(v).toFixed(1); }); return d; };
+  // refi marker
+  let refiMark="";
+  if(state.refi.on){ const x=X(RES.refiMonth); refiMark=`<line x1="${x}" y1="${m.t}" x2="${x}" y2="${m.t+ih}" stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="4 3"/>`
+    +`<text x="${x}" y="${m.t-5}" text-anchor="middle" font-size="10" fill="var(--accent)" font-weight="600">refi yr ${state.refi.yearN}</text>`; }
+  // reset marker (year 7)
+  let resetMark=""; if(H>7){ const x=X(84); resetMark=`<line x1="${x}" y1="${m.t}" x2="${x}" y2="${m.t+ih}" stroke="var(--faint)" stroke-width="1" stroke-dasharray="2 3"/>`
+    +`<text x="${x}" y="${m.t+ih+0}" text-anchor="middle" font-size="9" fill="var(--faint)"></text>`; }
+  // crossover dots
+  let crosses=""; series.forEach(s=>{ if(s.cross && s.cross<=Hm){ const x=X(s.cross), y=zeroY;
+    crosses+=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4.5" fill="${s.col}" stroke="#fff" stroke-width="1.5"/>`; } });
+  const lines = series.map(s=>{ const active = (s.key===state.scenario);
+    return `<path d="${path(s)}" fill="none" stroke="${s.col}" stroke-width="${active?3:1.8}" opacity="${active?1:.62}"/>`; }).join("");
+  document.getElementById("delta").innerHTML=
+    `<svg viewBox="0 0 ${W} ${Hpx}" id="dsvg">
+      <g class="grid">${grid}</g>
+      <line x1="${m.l}" y1="${zeroY}" x2="${W-m.r}" y2="${zeroY}" stroke="var(--ink)" stroke-width="1.3" opacity=".55"/>
+      <text x="${W-m.r}" y="${zeroY-5}" text-anchor="end" font-size="10" fill="var(--faint)">↑ ARM behind · ↓ ARM ahead</text>
+      ${resetMark}${refiMark}${lines}${crosses}
+      <g class="axis">${ylab}${xlab}</g>
+      <text x="${m.l+iw/2}" y="${Hpx+0}" text-anchor="middle" font-size="10.5" fill="var(--faint)" dy="-1">years</text>
+      <line id="dcross" class="crosshair" x1="0" y1="${m.t}" x2="0" y2="${m.t+ih}" style="opacity:0"/>
+      <g id="ddots"></g>
+      <rect x="${m.l}" y="${m.t}" width="${iw}" height="${ih}" fill="transparent" id="dhit"/>
+    </svg>`;
+  document.getElementById("deltaSub").innerHTML =
+    `Running cumulative (upfront points + payments) of the ${state.refi.on?`refi-at-${state.refi.yearN} ARM`:"ride-the-reset ARM"} minus the fixed baseline, in ${pv?"PV":"nominal"} dollars. Below zero = ARM ahead; the dot marks each scenario's <b>crossover</b>. ${SCEN_LAB[state.scenario]} is bold.`;
+  document.getElementById("deltaLeg").innerHTML = SCEN_KEYS.map(k=>
+    `<span style="color:${SCEN_COL[k]}"><i class="line" style="background:${SCEN_COL[k]}"></i>${SCEN_LAB[k]}</span>`).join("")
+    + `<span style="margin-left:auto;color:var(--faint)">● crossover year · ▮ refi</span>`;
+  // hover
+  const svg=document.getElementById("dsvg"),hit=document.getElementById("dhit"),cross=document.getElementById("dcross"),dots=document.getElementById("ddots");
+  hit.addEventListener("mousemove",ev=>{ const r=svg.getBoundingClientRect(); const px=(ev.clientX-r.left)/r.width*W;
+    let mo=Math.round(clamp((px-m.l)/iw,0,1)*Hm); const x=X(mo);
+    cross.setAttribute("x1",x); cross.setAttribute("x2",x); cross.style.opacity=1;
+    let dd="",rows="";
+    series.forEach(s=>{ const v=s.arr[mo]; dd+=`<circle cx="${x.toFixed(1)}" cy="${Y(v).toFixed(1)}" r="3.5" fill="${s.col}" stroke="#fff" stroke-width="1.3"/>`;
+      rows+=`<div class="t-r"><span><i style="background:${s.col}"></i>${SCEN_LAB[s.key]}</span><b>${sgn$(v)}</b></div>`; });
+    dots.innerHTML=dd;
+    showTip(`<div class="t-h">Year ${(mo/12).toFixed(1)}</div>${rows}`, ev.clientX, ev.clientY);
+  });
+  hit.addEventListener("mouseleave",()=>{ hideTip(); cross.style.opacity=0; dots.innerHTML=""; });
+}
+
+// ---- payment timeline ----
+function renderPay(){
+  const {Hm}=RES,H=state.horizon;
+  const W=440,Hpx=300,m={t:14,r:12,b:26,l:52},iw=W-m.l-m.r,ih=Hpx-m.t-m.b;
+  const fixPay=RES.fixPay;
+  const lines = SCEN_KEYS.map(key=>({ key, sim:activeStrat(key), col:SCEN_COL[key] }));
+  let mx=fixPay; lines.forEach(l=>{ for(let t=0;t<Hm;t++) if(l.sim.pi[t]>mx) mx=l.sim.pi[t]; });
+  mx=niceMax(mx*1.05);
+  const X=mo=>m.l+(mo/Hm)*iw, Y=v=>m.t+ih*(1-v/mx);
+  let grid="",ylab=""; for(let s=0;s<=4;s++){ const v=mx*s/4,yy=Y(v); grid+=`<line x1="${m.l}" y1="${yy}" x2="${W-m.r}" y2="${yy}"/>`;
+    ylab+=`<text x="${m.l-7}" y="${yy+3}" text-anchor="end">${fmt$k(v)}</text>`; }
+  let xlab=""; const stepYr=H<=10?2:5; for(let y=0;y<=H;y+=stepYr) xlab+=`<text x="${X(y*12)}" y="${Hpx-8}" text-anchor="middle">${y}</text>`;
+  const pathOf=sim=>{ let d=""; for(let mo=1;mo<=Hm;mo++){ d+=(mo>1?"L":"M")+X(mo).toFixed(1)+" "+Y(sim.pi[mo-1]).toFixed(1);} return d; };
+  const armLines = lines.map(l=>{ const active=l.key===state.scenario;
+    return `<path d="${pathOf(l.sim)}" fill="none" stroke="${l.col}" stroke-width="${active?2.6:1.6}" opacity="${active?1:.6}"/>`; }).join("");
+  const fixLine=`<line x1="${X(1)}" y1="${Y(fixPay)}" x2="${X(Hm)}" y2="${Y(fixPay)}" stroke="var(--fix)" stroke-width="2.6" stroke-dasharray="7 4"/>`;
+  let refiMark=""; if(state.refi.on){ const x=X(RES.refiMonth); refiMark=`<line x1="${x}" y1="${m.t}" x2="${x}" y2="${m.t+ih}" stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="3 3"/>`; }
+  document.getElementById("pay").innerHTML=
+    `<svg viewBox="0 0 ${W} ${Hpx}"><g class="grid">${grid}</g>${refiMark}${fixLine}${armLines}<g class="axis">${ylab}${xlab}</g></svg>`;
+  document.getElementById("payLeg").innerHTML =
+    `<span style="color:var(--fix)"><i class="dash" style="color:var(--fix)"></i>Fixed ${fmt$(fixPay)}/mo</span>`
+    + SCEN_KEYS.map(k=>`<span style="color:${SCEN_COL[k]}"><i class="line" style="background:${SCEN_COL[k]}"></i>${SCEN_LAB[k]}</span>`).join("");
+}
+
+// ---- year-8 reset ladder ----
+function renderLadder(){
+  const fixPay=RES.fixPay;
+  const rows=SCEN_KEYS.map(key=>{ const s=RES.scen[key], d=s.resetPI-fixPay;
+    return `<tr class="${key===state.scenario?'mid':''}"><td class="cl" style="color:${SCEN_COL[key]}">${SCEN_LAB[key]}</td>
+      <td class="num">${pctf(s.resetRate,3)}</td>
+      <td class="num">${fmt$(s.resetPI)}</td>
+      <td>${d<=0?'<span class="pill good">'+sgn$(d)+'</span>':'<span class="pill bad">'+sgn$(d)+'</span>'}</td></tr>`; }).join("");
+  document.getElementById("ladder").innerHTML=
+    `<table class="ladder"><tr><th>Scenario</th><th>Reset rate</th><th>Reset P&amp;I</th><th>vs fixed</th></tr>
+       <tr><td class="sub2">Fixed baseline</td><td class="num sub2">${pctf(state.fix.rate,3)}</td><td class="num sub2">${fmt$(fixPay)}</td><td></td></tr>
+       ${rows}</table>
+     <p class="hint" style="margin-top:10px">First reset re-amortizes the <b>${fmt$k(RES.bal84)}</b> month-84 balance over the remaining ~23 yr at the fully-indexed rate (SOFR + ${state.arm.margin}% margin), clamped by the ${state.arm.capInit}/${state.arm.capPeriodic}/${state.arm.capLife} caps.</p>`;
+}
+
+// ---- big scenario comparison table ----
+function renderTable(pv){
+  const base=RES.fixTot, bV=pv?base.pv:base.nom;
+  const cell=(tot,cross)=>{ const v=(pv?tot.pv:tot.nom)-bV;
+    return `<td><span class="${v<0?'pill good':'pill bad'}">${sgn$(v)}</span><div class="sub2 num" style="text-align:right;margin-top:3px">${cross?'cross yr '+(cross/12).toFixed(1):'no crossover'}</div></td>`; };
+  let head=`<tr><th>Strategy</th>${SCEN_KEYS.map(k=>`<th style="color:${SCEN_COL[k]};text-align:right">${SCEN_LAB[k]}</th>`).join("")}</tr>`;
+  // ARM no refi
+  let r1=`<tr><td class="cl">ARM — ride the reset</td>${SCEN_KEYS.map(k=>{ const s=RES.scen[k]; return cell(s.nrTot, s.crossNR); }).join("")}</tr>`;
+  // ARM refi @N
+  let r2=`<tr><td class="cl">ARM — refi @ yr ${state.refi.yearN}</td>${SCEN_KEYS.map(k=>{ const s=RES.scen[k];
+      const supp = s.refiInfo && s.refiInfo.suppressed;
+      const v=(pv?s.rfTot.pv:s.rfTot.nom)-bV, cr=crossoverForRefi(s,pv);
+      const tail = supp ? '<div class="sub2" style="text-align:right;margin-top:3px;color:var(--warn)">guard: no refi</div>'
+                        : '<div class="sub2 num" style="text-align:right;margin-top:3px">'+(cr?'cross yr '+(cr/12).toFixed(1):'no crossover')+'</div>';
+      return `<td><span class="${v<0?'pill good':'pill bad'}">${sgn$(v)}</span>${tail}</td>`; }).join("")}</tr>`;
+  // baseline
+  let r3=`<tr class="mid"><td class="cl">30-yr fixed (baseline)</td><td colspan="4" style="text-align:left;color:var(--muted)">Reference: total ${pv?"PV":"nominal"} cost ${fmt$k(bV)} (every cell above is the delta against this)</td></tr>`;
+  document.getElementById("bigtable").innerHTML=`<table class="ladder">${head}${r1}${r2}${r3}</table>`;
+  document.getElementById("tableSub").innerHTML =
+    `Cells = total ${pv?"PV":"nominal"} cost to the ${state.horizon}-yr horizon (payments + upfront + payoff balance${state.opp?" + freed-cash opportunity credit":""}) minus the fixed. Green = ARM cheaper. The hedge guard zeroes a refi wherever the scenario's fixed rate at year ${state.refi.yearN} is ≥ ${state.guard.threshold.toFixed(2)}%.`;
+}
+function crossoverForRefi(s,pv){ const arr=new Float64Array(360); for(let t=0;t<360;t++) arr[t]=(pv?s.rfAcc.cumP[t]-RES.fixAcc.cumP[t]:s.rfAcc.cumN[t]-RES.fixAcc.cumN[t]); return crossover(arr, RES.Hm); }
+
+function renderAssump(){
+  document.getElementById("assump").innerHTML=
+    `Reference is always the 30-yr fixed; deltas are ARM strategy minus fixed. Amortization, ARM reset, the rate→price closing-cost precompute, the refi event and the cost-delta metric reproduce the §6 deterministic anchors (verified at load — see the badge). `
+    + `Forward SOFR &amp; fixed curves are the editable §5.6 estimates, not predictions; the ARM is fixed through the year-7 reset (~mid-2033), then resets every 6 months on the scenario's SOFR path. `
+    + `Margin, caps, index and floor are <b style="color:var(--warn)">[CONFIRM]</b> from the promissory Note — they are the highest-leverage inputs. Planning aid, not financial advice.`;
+}
+
+// ===========================================================================
+// Controls
+// ===========================================================================
+function syncLabels(){
+  const g=id=>document.getElementById(id);
+  g("loanNote").innerHTML = `Loan <b>${fmt$(RES.loan)}</b> · LTV <b>${LTV[state.down]}%</b> · cash down <b>${fmt$(PROPERTY*state.down/100)}</b>` + (state.down===25?` · frees <b>+$68,375</b> vs 30%`:``);
+  g("v_opp").textContent = state.opp?"on":"off";
+  g("v_armRate").textContent=pctf(state.arm.rate,3);
+  g("v_armPts").textContent = fmt$(RES.armPts) + (state.arm.ptsAuto?" · auto":" · manual");
+  g("v_margin").textContent=pctf(state.arm.margin,3);
+  g("v_floor").textContent=pctf(state.arm.floor,3);
+  g("v_fixRate").textContent=pctf(state.fix.rate,3);
+  g("v_fixPts").textContent = fmt$(RES.fixPts) + (state.fix.ptsAuto?" · auto":" · manual");
+  g("v_clPur").textContent=fmt$(state.closing.purchase);
+  g("v_clRefi").textContent=fmt$(state.closing.refi);
+  g("v_refiN").textContent=state.refi.yearN+" yr";
+  g("v_refiRate").textContent=pctf(state.refi.rate,3);
+  g("v_guard").textContent=pctf(state.guard.threshold,3);
+  g("v_ralt").textContent=state.ralt+"%";
+  g("v_hz").textContent=state.horizon+" yr";
+  g("scenNote").innerHTML = state.scenario==="custom" ? "Editing custom forward curves below." : scenBlurb(state.scenario);
+  // sync raw input values
+  g("armRate").value=state.arm.rate; g("armPts").value=Math.round(RES.armPts); g("armPts").disabled=state.arm.ptsAuto;
+  g("margin").value=state.arm.margin; g("floor").value=state.arm.floor;
+  g("capInit").value=state.arm.capInit; g("capPeriodic").value=state.arm.capPeriodic; g("capLife").value=state.arm.capLife;
+  g("fixRate").value=state.fix.rate; g("fixPts").value=Math.round(RES.fixPts); g("fixPts").disabled=state.fix.ptsAuto;
+  g("clPur").value=state.closing.purchase; g("clRefi").value=state.closing.refi;
+  g("refiN").value=state.refi.yearN; g("refiRate").value=state.refi.rate;
+  g("guardT").value=state.guard.threshold; g("ralt").value=state.ralt; g("hz").value=state.horizon;
+  g("refiCostNote").innerHTML = state.refi.cost==="rolled" ? `Closing costs (${fmt$(state.closing.refi)}) added to the new balance.`
+    : state.refi.cost==="paid" ? `Closing costs (${fmt$(state.closing.refi)}) paid in cash at refi.`
+    : `Lender credit covers costs in exchange for <b>+${NOCOST_BUMP.toFixed(2)}%</b> on the new rate.`;
+}
+function scenBlurb(key){
+  const b={ benign:"Fed cuts bite; SOFR drifts to 2.5%, the reset <b>drops</b> below the teaser.",
+    base:"Rangebound under a hawkish Warsh Fed; reset ≈ the fixed.",
+    adverse:"Higher-for-longer; SOFR ~4.5%, reset +~$0.5k/mo over the fixed.",
+    severe:"Sticky inflation; SOFR ~5.5%, reset +~$1k/mo and the refi window shuts." };
+  return b[key];
+}
+
+function buildCustom(){
+  const t=document.getElementById("custTable");
+  const head=`<tr><th></th>${YEARS_G.map(y=>`<th>${String(y).slice(2)}</th>`).join("")}<th>LR</th></tr>`;
+  const rowFor=(label,key)=>{ const arr=state.custom[key], long=state.custom[key+"Long"];
+    let cells=arr.map((v,i)=>{ const prev=i===0?v:arr[i-1]; const viol=Math.abs(v-prev)>1.5;
+      return `<td><input type="number" step="0.05" value="${v}" data-cu="${key}" data-i="${i}" class="${viol?'viol':''}"></td>`; }).join("");
+    const lv=Math.abs(long-arr[7])>1.5;
+    cells+=`<td><input type="number" step="0.05" value="${long}" data-cu="${key}Long" data-i="-1" class="${lv?'viol':''}"></td>`;
+    return `<tr><td>${label}</td>${cells}</tr>`; };
+  t.innerHTML=head+rowFor("Fixed","fix")+rowFor("SOFR","sofr");
+  t.querySelectorAll("input[data-cu]").forEach(inp=>inp.addEventListener("input",()=>{
+    const key=inp.dataset.cu, i=+inp.dataset.i, v=+inp.value||0;
+    if(i===-1) state.custom[key]=v; else state.custom[key][i]=v; debounce(()=>{ buildCustom(); render(); });
+  }));
+}
+
+let dTimer=null; function debounce(fn){ clearTimeout(dTimer); dTimer=setTimeout(fn,110); }
+
+function setupCollapsibles(){
+  document.querySelectorAll(".group").forEach(grp=>{
+    const h2=grp.querySelector("h2"); if(!h2||grp.querySelector(".group-h")) return;
+    const btn=document.createElement("button"); btn.type="button"; btn.className="group-h";
+    btn.innerHTML=`<span>${h2.textContent}</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
+    const body=document.createElement("div"); body.className="group-body";
+    const inner=document.createElement("div"); inner.className="inner";
+    [...grp.children].forEach(ch=>{ if(ch!==h2) inner.appendChild(ch); });
+    body.appendChild(inner); grp.insertBefore(btn,h2.nextSibling); grp.appendChild(body);
+    btn.addEventListener("click",()=>grp.classList.toggle("collapsed"));
+  });
+}
+function segBind(id, fn){ document.querySelectorAll(`#${id} button`).forEach(b=>b.addEventListener("click",()=>{
+  document.querySelectorAll(`#${id} button`).forEach(x=>x.classList.remove("on")); b.classList.add("on"); fn(b); })); }
+function setSeg(id, val, attr){ document.querySelectorAll(`#${id} button`).forEach(b=>b.classList.toggle("on", b.dataset[attr]===String(val))); }
+
+function init(){
+  setupCollapsibles(); buildCustom();
+  // down payment
+  segBind("downSeg", b=>{ state.down=+b.dataset.d; render(); });
+  segBind("oppSeg", b=>{ state.opp=b.dataset.o==="1"; render(); });
+  // ARM
+  bindNum("armRate", v=>state.arm.rate=v); bindNum("floor", v=>state.arm.floor=v);
+  bindNum("capInit", v=>state.arm.capInit=v); bindNum("capPeriodic", v=>state.arm.capPeriodic=v); bindNum("capLife", v=>state.arm.capLife=v);
+  bindRange("margin", v=>state.arm.margin=v);
+  document.getElementById("armPts").addEventListener("input",e=>{ state.arm.ptsAuto=false; state.arm.pts=+e.target.value||0; debounce(render); });
+  document.getElementById("armPtsAuto").addEventListener("click",()=>{ state.arm.ptsAuto=true; render(); });
+  // fixed
+  bindNum("fixRate", v=>state.fix.rate=v);
+  document.getElementById("fixPts").addEventListener("input",e=>{ state.fix.ptsAuto=false; state.fix.pts=+e.target.value||0; debounce(render); });
+  document.getElementById("fixPtsAuto").addEventListener("click",()=>{ state.fix.ptsAuto=true; render(); });
+  // closing
+  bindNum("clPur", v=>state.closing.purchase=v); bindNum("clRefi", v=>state.closing.refi=v);
+  // refi
+  segBind("refiSeg", b=>{ state.refi.on=b.dataset.r==="1";
+    document.getElementById("refiBody").style.opacity=state.refi.on?"1":".45";
+    document.getElementById("refiBody").style.pointerEvents=state.refi.on?"auto":"none"; render(); });
+  bindRange("refiN", v=>state.refi.yearN=v);
+  segBind("refiRateSeg", b=>{ state.refi.rateMode=b.dataset.m;
+    document.getElementById("refiRateManual").style.display=state.refi.rateMode==="manual"?"block":"none"; render(); });
+  bindNum("refiRate", v=>state.refi.rate=v);
+  segBind("refiTermSeg", b=>{ state.refi.term=b.dataset.t; render(); });
+  segBind("refiCostSeg", b=>{ state.refi.cost=b.dataset.c; render(); });
+  // scenario
+  segBind("scenSeg", b=>{ state.scenario=b.dataset.s;
+    document.getElementById("customGrid").style.display=state.scenario==="custom"?"block":"none"; render(); });
+  document.getElementById("custReset").addEventListener("click",()=>{ state.custom=freshCustom(); buildCustom(); render(); });
+  // guard
+  segBind("guardSeg", b=>{ state.guard.on=b.dataset.g==="1"; render(); });
+  bindRange("guardT", v=>state.guard.threshold=v);
+  // valuation
+  bindRange("ralt", v=>state.ralt=v); bindRange("hz", v=>state.horizon=v);
+  document.getElementById("reset").addEventListener("click",()=>{ Object.assign(state, JSON.parse(JSON.stringify(DEFAULTS))); state.custom=freshCustom(); resyncSegs(); buildCustom(); render(); });
+  // top
+  segBind("dollarSeg", b=>{ state.dollars=b.dataset.d; render(); });
+  resyncSegs();
+  selfTest();
+  render();
+}
+function resyncSegs(){
+  setSeg("downSeg", state.down, "d"); setSeg("oppSeg", state.opp?1:0, "o");
+  setSeg("refiSeg", state.refi.on?1:0, "r"); setSeg("refiRateSeg", state.refi.rateMode, "m");
+  setSeg("refiTermSeg", state.refi.term, "t"); setSeg("refiCostSeg", state.refi.cost, "c");
+  setSeg("scenSeg", state.scenario, "s"); setSeg("guardSeg", state.guard.on?1:0, "g");
+  setSeg("dollarSeg", state.dollars, "d");
+  document.getElementById("refiBody").style.opacity=state.refi.on?"1":".45";
+  document.getElementById("refiBody").style.pointerEvents=state.refi.on?"auto":"none";
+  document.getElementById("refiRateManual").style.display=state.refi.rateMode==="manual"?"block":"none";
+  document.getElementById("customGrid").style.display=state.scenario==="custom"?"block":"none";
+}
+function bindNum(id, set){ const el=document.getElementById(id); el.addEventListener("input",()=>{ set(+el.value||0); syncLabels(); debounce(render); }); }
+function bindRange(id, set){ const el=document.getElementById(id); el.addEventListener("input",()=>{ set(+el.value); syncLabels(); debounce(render); }); }
+
+// ---- §6 self-test (unit anchors) ----
+function selfTest(){
+  const L=957250, near=(a,b,t)=>Math.abs(a-b)<=t;
+  const checks=[
+    ["ARM P&I 5.875%", pmt(L,0.05875,360), 5662.5, 0.5],
+    ["Fixed P&I 6.25%", pmt(L,0.0625,360), 5893.95, 0.5],
+    ["ARM bal@84", simLoan({loan:L,kind:"arm",startRate:5.875,margin:2.75,caps:{init:5,periodic:1,life:5},floor:2.75,sObj:SCEN.base,refi:null}).balA[83], 856100, 200],
+    ["Reset Severe 8.25%", pmt(856144,0.0825,276), 6932, 3],
+    ["ARM pts 5.875/30", pointsCost("arm",5.875,30), 708, 5],
+    ["Fixed pts 6.25/30", pointsCost("fix",6.25,30), -747, 5],
+    ["Break-even reset", breakEven(simLoan({loan:L,kind:"arm",startRate:5.875,margin:2.75,caps:{init:5,periodic:1,life:5},floor:2.75,sObj:SCEN.base,refi:null}).balA[83], pmt(L,0.0625,360)), 6.3, 0.1],
+  ];
+  let pass=0; checks.forEach(([n,got,exp,tol])=>{ const ok=near(got,exp,tol); if(ok)pass++; if(!ok) console.warn("§6 anchor FAIL:",n,"got",got,"exp",exp); });
+  const ok=pass===checks.length;
+  console.log(`%c§6 model validation: ${pass}/${checks.length} anchors ${ok?"PASS":"FAIL"}`, `color:${ok?"#0d9488":"#d6435a"};font-weight:700`);
+  const badge=document.getElementById("valStatus");
+  if(badge) badge.innerHTML = ok ? `<span style="color:var(--fix);font-weight:600">✓ Model validated — ${pass}/${checks.length} §6 anchors reproduced.</span>`
+    : `<span style="color:var(--warn);font-weight:600">⚠ ${pass}/${checks.length} anchors — check console.</span>`;
+}
+
+init();
+</script>
+</body>
+</html>
